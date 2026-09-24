@@ -1,0 +1,138 @@
+# re:Invent 2026 Session Planner — edit this file with your preferences
+
+event:
+  # Date range for the conference
+  start_date: "2026-12-01"
+  end_date: "2026-12-05"
+  # Substring matched against the event location field
+  location_keyword: "Las Vegas"
+  # Only physical/in-person sessions
+  location_mode: "physical"
+
+preferences:
+  # Topics you care about, in priority order.
+  # Each keyword is a case-insensitive substring matched against session title + description.
+  # Weight drives how much a match contributes to the relevance score (1-10).
+  domains:
+    - name: "Generative AI"
+      keywords:
+        - "generative ai"
+        - "bedrock"
+        - "foundation model"
+        - "llm"
+        - "large language model"
+        - "claude"
+        - "titan"
+        - "ai agent"
+        - "rag"
+        - "prompt"
+      weight: 10
+
+    - name: "Machine Learning"
+      keywords:
+        - "sagemaker"
+        - "machine learning"
+        - "deep learning"
+        - "mlops"
+        - "model training"
+        - "inference"
+        - "computer vision"
+        - "nlp"
+      weight: 8
+
+    - name: "Data & Analytics"
+      keywords:
+        - "data lake"
+        - "redshift"
+        - "athena"
+        - "glue"
+        - "lake formation"
+        - "quicksight"
+        - "kinesis"
+        - "streaming"
+        - "analytics"
+      weight: 6
+
+    - name: "Serverless"
+      keywords:
+        - "lambda"
+        - "serverless"
+        - "api gateway"
+        - "step functions"
+        - "eventbridge"
+        - "sam"
+      weight: 5
+
+  # Learning level preferences
+  levels:
+    preferred: ["Advanced", "Expert"]
+    acceptable: ["Intermediate"]
+    avoid: ["Foundational"]
+
+  # Score multipliers applied based on learning level match
+  level_multipliers:
+    preferred: 1.0
+    acceptable: 0.6
+    avoid: 0.2
+    unknown: 0.5     # when level is not set on the session
+
+  # Schedule optimizer settings
+  max_sessions_per_day: 6
+  # Assumed session duration in minutes when the catalog does not provide end time.
+  # Workshops: 120, Tech Talks: 60, Chalk Talks: 60, Builder Sessions: 60
+  default_duration_minutes:
+    "Breakout Session": 60
+    "Workshop": 120
+    "Chalk Talk": 60
+    "Builder Session": 60
+    "Hackathon": 240
+    "default": 60
+  # Buffer between sessions in minutes (travel / bio break)
+  buffer_minutes: 15
+  # Penalty applied to a candidate session's score when selecting it would
+  # require a venue change from the previous session (higher = avoid hops more).
+  location_change_penalty: 3.0
+
+# Known re:Invent 2026 venues and their walking-distance clusters.
+# Sessions in the same cluster have 0 hop cost; adjacent clusters cost 1;
+# non-adjacent clusters cost 2.
+venue_clusters:
+  cluster_1:
+    label: "Venetian / Wynn / Encore"
+    keywords: ["venetian", "wynn", "encore", "palazzo"]
+  cluster_2:
+    label: "Caesars Forum / LINQ"
+    keywords: ["caesars", "forum", "linq", "harrahs", "paris"]
+  cluster_3:
+    label: "MGM Grand / Park MGM"
+    keywords: ["mgm", "park mgm", "aria", "t-mobile arena"]
+  cluster_4:
+    label: "Mandalay Bay / Delano"
+    keywords: ["mandalay", "delano", "south point", "m resort"]
+
+# Adjacency matrix: cost in "hops" between clusters (0 = same cluster)
+# cluster_1 ↔ cluster_2: 1 hop (15-min walk or shuttle)
+# cluster_1 ↔ cluster_3: 2 hops (25-min shuttle)
+# cluster_1 ↔ cluster_4: 3 hops (35-min bus)
+# cluster_2 ↔ cluster_3: 2 hops
+# cluster_2 ↔ cluster_4: 3 hops
+# cluster_3 ↔ cluster_4: 2 hops
+venue_hop_costs:
+  - [0, 1, 2, 3]
+  - [1, 0, 2, 3]
+  - [2, 2, 0, 2]
+  - [3, 3, 2, 0]
+
+registration:
+  enabled: true
+  # Your AWS Builder / re:Invent registration email
+  email: ""
+  # Password comes from .env: AWSEVENTS_PASSWORD
+  # How often to poll for session availability (seconds)
+  watch_interval_seconds: 30
+  # Max retries per session before giving up
+  max_retries: 3
+  # Maximum sessions to register for (across all days)
+  max_sessions_to_register: 25
+  # Headless browser (true = no visible window; false = show browser)
+  headless: false

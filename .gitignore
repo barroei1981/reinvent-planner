@@ -2,3 +2,10 @@ _lch/render/
 _lch/config.user.toml
 _lch/custom/config.user.toml
 .harness/cost_log.md
+.env
+schedule.json
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
