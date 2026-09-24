@@ -1,10 +1,33 @@
 # awsevents_agent
 
 ## Project Overview
-[Fill in: what this project does]
+re:Invent 2026 session planner agent. Fetches the public AWS Events catalog,
+scores sessions by keyword-based domain relevance and learning level, builds an
+optimised daily schedule that minimises venue-hopping across Las Vegas buildings,
+and auto-registers for sessions via Playwright once seats open.
 
 ## Stack
-[Fill in: languages, frameworks, databases]
+- Python 3.10+ / uv
+- httpx (catalog API calls)
+- Playwright/Chromium (registration automation)
+- pydantic, pyyaml, click, rich
+- Source: `aws-samples/sample-smb-solutions/aws-events-mcp` catalog endpoint
+
+## Key Files
+- `config.yaml`         — user preferences (domains, level, dates, credentials)
+- `agent/catalog.py`    — async catalog fetcher (calls AWS content-directory API)
+- `agent/scorer.py`     — keyword domain scorer + level multiplier
+- `agent/scheduler.py`  — greedy daily schedule optimizer with venue-hop penalty
+- `agent/registrar.py`  — Playwright login + seat auto-registration
+- `agent/main.py`       — CLI: plan / list / register / watch
+
+## Usage
+```
+uv run awsevents plan          # fetch → score → schedule → save schedule.json
+uv run awsevents list          # show all matching sessions with scores
+uv run awsevents register      # register from schedule.json immediately
+uv run awsevents watch         # poll until sessions open, then auto-register
+```
 
 ## LCH Harness
 This project uses the LCH Harness. Key paths:
@@ -13,10 +36,13 @@ This project uses the LCH Harness. Key paths:
 - Story status: `docs/implementation-artifacts/sprint-status.yaml`
 - Story files: `docs/implementation-artifacts/{story-key}.md`
 - Memory: `.harness/memory.md`
-- Decisions: `.harness/decisions/` (individual files — see `claude/shared/decisions-pattern.md`)
+- Decisions: `.harness/decisions/`
 
 ## Conventions
-[Fill in: coding standards, naming, branch strategy]
+- Async-first: all I/O in async functions, called via asyncio.run() at CLI edge
+- Config-driven: no hardcoded domains, levels, or dates — everything in config.yaml
+- Credentials via .env only: AWSEVENTS_PASSWORD (never committed)
 
 ## Infrastructure Constraints
-[Fill in: cloud provider, existing resources, constraints]
+- No AWS credentials required — catalog endpoint is public
+- Playwright Chromium installed via: `playwright install chromium`
