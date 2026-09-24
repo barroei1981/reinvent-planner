@@ -28,7 +28,7 @@ from agent.scorer import Scorer
 from agent.scheduler import build_schedule, ScheduledSession
 
 load_dotenv()
-console = Console()
+console = Console(width=160)
 
 _CONFIG_PATH = Path("config.yaml")
 _SCHEDULE_PATH = Path("schedule.json")
@@ -111,17 +111,21 @@ def cli() -> None:
 @cli.command()
 @click.option("--min-score", default=0.0, type=float, help="Only show sessions with score >= N (0-1)")
 @click.option("--day", default=None, help="Filter to one day YYYY-MM-DD")
-def plan(min_score: float, day: Optional[str]) -> None:
+@click.option("--all-events", is_flag=True, default=False, help="Ignore date/location filters — plan from full catalog")
+def plan(min_score: float, day: Optional[str], all_events: bool) -> None:
     """Fetch sessions, score them, build optimised daily schedule and save to schedule.json."""
 
     async def _run() -> None:
         config = _load_config()
         ev_cfg = config.get("event", {})
 
-        start = date.fromisoformat(ev_cfg["start_date"]) if ev_cfg.get("start_date") else None
-        end = date.fromisoformat(ev_cfg["end_date"]) if ev_cfg.get("end_date") else None
-        loc_text = ev_cfg.get("location_keyword")
-        loc_mode = ev_cfg.get("location_mode")
+        if all_events:
+            start, end, loc_text, loc_mode = None, None, None, None
+        else:
+            start = date.fromisoformat(ev_cfg["start_date"]) if ev_cfg.get("start_date") else None
+            end = date.fromisoformat(ev_cfg["end_date"]) if ev_cfg.get("end_date") else None
+            loc_text = ev_cfg.get("location_keyword")
+            loc_mode = ev_cfg.get("location_mode")
 
         console.print(f"[bold]Fetching sessions from AWS Events catalog...[/bold]")
         sessions = await fetch_sessions(
@@ -138,7 +142,13 @@ def plan(min_score: float, day: Optional[str]) -> None:
         console.print(f"  [cyan]{len(above)}[/cyan] sessions with score >= {min_score}")
 
         if not above:
-            console.print("[yellow]No sessions matched your preferences. Try relaxing config.yaml filters.[/yellow]")
+            console.print("[yellow]No sessions matched your preferences.[/yellow]")
+            if not all_events:
+                console.print(
+                    "[dim]re:Invent 2026 sessions are typically published ~2 months before the event "
+                    "(October 2026). Run [bold]awsevents plan --all-events[/bold] to test the pipeline "
+                    "with current catalog data, or check back in October.[/dim]"
+                )
             return
 
         schedule = build_schedule(above, config)
@@ -160,44 +170,44 @@ def plan(min_score: float, day: Optional[str]) -> None:
 @cli.command("list")
 @click.option("--min-score", default=0.1, type=float, help="Minimum relevance score (0-1)")
 @click.option("--top", default=50, type=int, help="Show top N sessions")
-def list_sessions(min_score: float, top: int) -> None:
+@click.option("--all-events", is_flag=True, default=False, help="Ignore date/location filters — show all catalog sessions")
+def list_sessions(min_score: float, top: int, all_events: bool) -> None:
     """List all matching sessions sorted by relevance score."""
 
     async def _run() -> None:
         config = _load_config()
         ev_cfg = config.get("event", {})
 
-        start = date.fromisoformat(ev_cfg["start_date"]) if ev_cfg.get("start_date") else None
-        end = date.fromisoformat(ev_cfg["end_date"]) if ev_cfg.get("end_date") else None
+        if all_events:
+            start, end, loc_text, loc_mode = None, None, None, None
+        else:
+            start = date.fromisoformat(ev_cfg["start_date"]) if ev_cfg.get("start_date") else None
+            end = date.fromisoformat(ev_cfg["end_date"]) if ev_cfg.get("end_date") else None
+            loc_text = ev_cfg.get("location_keyword")
+            loc_mode = ev_cfg.get("location_mode")
 
         sessions = await fetch_sessions(
             start_date=start,
             end_date=end,
-            location_text=ev_cfg.get("location_keyword"),
-            location_mode=ev_cfg.get("location_mode"),
+            location_text=loc_text if not all_events else None,
+            location_mode=loc_mode if not all_events else None,
         )
         scorer = Scorer(config.get("preferences", {}))
         scored = scorer.score_all(sessions)
         filtered = [s for s in scored if s.score >= min_score][:top]
 
-        table = Table(title=f"Top {len(filtered)} sessions (min score {min_score})", box=box.MINIMAL_DOUBLE_HEAD)
-        table.add_column("Score", style="cyan", width=6)
-        table.add_column("Date", width=10)
-        table.add_column("Time", width=8)
-        table.add_column("Level", width=12)
-        table.add_column("Location", width=20)
-        table.add_column("Title", no_wrap=False)
-
+        console.print(f"\n[bold]Top {len(filtered)} sessions[/bold]  (min score {min_score})\n")
+        console.print(f"  {'SCORE':6}  {'DATE':10}  {'TIME':8}  {'LEVEL':13}  TITLE")
+        console.print("  " + "─" * 90)
         for s in filtered:
-            table.add_row(
-                f"{s.score:.2f}",
-                s.start_date.isoformat(),
-                s.start_time or "—",
-                s.learning_level or "—",
-                (s.location or "—")[:20],
-                s.title[:80],
+            time_str = (s.start_time or "—")[:8]
+            level_str = (s.learning_level or "—")[:13]
+            title_str = s.title[:65]
+            console.print(
+                f"  [cyan]{s.score:.2f}[/cyan]   {s.start_date}  {time_str:<8}  {level_str:<13}  [bold]{title_str}[/bold]"
             )
-        console.print(table)
+            if s.location:
+                console.print(f"           {'':10}   {'':8}  {'':13}  [dim]{s.location[:70]}[/dim]")
 
     asyncio.run(_run())
 
