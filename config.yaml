@@ -10,7 +10,28 @@ event:
   location_mode: "physical"
 
 preferences:
-  # Topics you care about, in priority order.
+  # ── re:Invent official topic tracks ──────────────────────────────────────
+  # List the AWS topic tracks you want to attend. Sessions whose track label
+  # matches get a bonus score on top of keyword matching.
+  # Full list: AI/ML, Analytics, Application Integration, Compute, Containers,
+  #   Database, Developer Tools, Management & Governance, Migration,
+  #   Networking & Content Delivery, Security, Serverless, Storage
+  topic_tracks:
+    - "AI/ML"
+    - "Analytics"
+    - "Security"
+    - "Serverless"
+
+  # ── Session type preferences ─────────────────────────────────────────────
+  # Preferred formats. Non-preferred types get a 0.7 score multiplier.
+  # re:Invent types: Breakout Session, Builder Session, Chalk Talk, Code Talk,
+  #   Innovation Talk, Leadership Session, Lightning Talk, Workshop
+  session_types:
+    - "Breakout Session"
+    - "Chalk Talk"
+    - "Workshop"
+
+  # ── Topics you care about, in priority order ──────────────────────────────
   # Each keyword is a case-insensitive substring matched against session title + description.
   # Weight drives how much a match contributes to the relevance score (1-10).
   domains:
@@ -126,7 +147,7 @@ venue_hop_costs:
 registration:
   enabled: true
   # Your AWS Builder / re:Invent registration email
-  email: ""
+  email: "your@email.com"
   # Password comes from .env: AWSEVENTS_PASSWORD
   # How often to poll for session availability (seconds)
   watch_interval_seconds: 30

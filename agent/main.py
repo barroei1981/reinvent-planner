@@ -1,10 +1,11 @@
 """CLI entry point for the re:Invent session planner agent.
 
 Commands:
-  plan   — fetch sessions, score, build schedule, save + print
-  list   — show all matching sessions with scores (no scheduling)
-  watch  — load saved schedule and auto-register when seats open
-  register — register from saved schedule immediately (no polling)
+  sync-wishlist  — log in to registration.awsevents.com, scrape full catalog + wishlist
+  plan           — score + schedule (uses scraped catalog when available, public API otherwise)
+  list           — show all matching sessions with scores (no scheduling)
+  watch          — load saved schedule and auto-register when seats open
+  register       — register from saved schedule immediately (no polling)
 """
 
 from __future__ import annotations
@@ -108,46 +109,120 @@ def cli() -> None:
     """re:Invent session planner — score, schedule, auto-register."""
 
 
+# ── sync-wishlist ─────────────────────────────────────────────────────────────
+
+@cli.command("sync-wishlist")
+@click.option("--headless", is_flag=True, default=False, help="Run browser in headless mode (no visible window)")
+def sync_wishlist_cmd(headless: bool) -> None:
+    """Log in to registration.awsevents.com, scrape full catalog + your wishlist.
+
+    Saves reinvent_catalog.json (all sessions) and wishlist.json (your bookmarks).
+    Run this before 'plan' to use the real re:Invent session data instead of the
+    public AWS Events catalog.
+    """
+    config = _load_config()
+    reg_cfg = config.get("registration", {})
+    email = reg_cfg.get("email") or ""
+    password = os.getenv("AWSEVENTS_PASSWORD", "")
+
+    if not email or not password:
+        console.print("[red]Set registration.email in config.yaml and AWSEVENTS_PASSWORD in .env[/red]")
+        return
+
+    from agent.wishlist import sync_wishlist, save_results
+
+    async def _run() -> None:
+        console.print(f"[bold]Syncing re:Invent catalog from registration.awsevents.com...[/bold]")
+        console.print(f"  Email: [cyan]{email}[/cyan]  |  Headless: {headless}")
+        try:
+            all_sessions, wishlisted = await sync_wishlist(email, password, headless=headless)
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "CATALOG_NOT_OPEN" in msg:
+                console.print("\n[yellow bold]⏳  Catalog not open yet[/yellow bold]")
+                console.print("[yellow]" + msg.split("\n", 1)[-1] + "[/yellow]")
+                console.print(
+                    "\n[dim]Everything is ready — your preferences are configured in config.yaml.\n"
+                    "When the catalog opens (~October 2026):\n"
+                    "  1. Run [bold]awsevents sync-wishlist[/bold] — pulls all sessions + your wishlist\n"
+                    "  2. Run [bold]awsevents plan[/bold]           — builds your optimised schedule\n"
+                    "  3. Run [bold]awsevents watch[/bold]          — auto-registers when seats open[/dim]"
+                )
+            else:
+                console.print(f"[red]Error:[/red] {exc}")
+            return
+        save_results(all_sessions, wishlisted)
+
+        console.print(f"\n[bold green]Sync complete[/bold green]")
+        console.print(f"  Total sessions in catalog : [cyan]{len(all_sessions)}[/cyan]")
+        console.print(f"  Your wishlisted sessions  : [cyan]{len(wishlisted)}[/cyan]")
+        if wishlisted:
+            console.print("\n[bold]Your wishlist:[/bold]")
+            for s in wishlisted[:20]:
+                console.print(f"  [green]★[/green] {s.title[:70]}  [{s.level or '?'}]  {s.date or ''}")
+        console.print("\n[dim]Run 'awsevents plan' to build your optimised schedule.[/dim]")
+
+    asyncio.run(_run())
+
+
+# ── plan ──────────────────────────────────────────────────────────────────────
+
 @cli.command()
 @click.option("--min-score", default=0.0, type=float, help="Only show sessions with score >= N (0-1)")
 @click.option("--day", default=None, help="Filter to one day YYYY-MM-DD")
 @click.option("--all-events", is_flag=True, default=False, help="Ignore date/location filters — plan from full catalog")
 def plan(min_score: float, day: Optional[str], all_events: bool) -> None:
-    """Fetch sessions, score them, build optimised daily schedule and save to schedule.json."""
+    """Score + schedule sessions. Uses scraped catalog (reinvent_catalog.json) when available,
+    falls back to the public AWS Events API otherwise."""
 
     async def _run() -> None:
         config = _load_config()
         ev_cfg = config.get("event", {})
-
-        if all_events:
-            start, end, loc_text, loc_mode = None, None, None, None
-        else:
-            start = date.fromisoformat(ev_cfg["start_date"]) if ev_cfg.get("start_date") else None
-            end = date.fromisoformat(ev_cfg["end_date"]) if ev_cfg.get("end_date") else None
-            loc_text = ev_cfg.get("location_keyword")
-            loc_mode = ev_cfg.get("location_mode")
-
-        console.print(f"[bold]Fetching sessions from AWS Events catalog...[/bold]")
-        sessions = await fetch_sessions(
-            start_date=start,
-            end_date=end,
-            location_text=loc_text,
-            location_mode=loc_mode,
-        )
-        console.print(f"  Found [cyan]{len(sessions)}[/cyan] sessions in date/location range")
-
         scorer = Scorer(config.get("preferences", {}))
-        scored = scorer.score_all(sessions)
+
+        # ── Source selection ──────────────────────────────────────────────
+        # Prefer the scraped re:Invent catalog when available (sync-wishlist was run).
+        from pathlib import Path as _Path
+        reinvent_catalog_path = _Path("reinvent_catalog.json")
+
+        if reinvent_catalog_path.exists() and not all_events:
+            from agent.wishlist import load_catalog
+            reinvent_sessions = load_catalog()
+            console.print(
+                f"[bold]Using scraped re:Invent catalog[/bold]  "
+                f"([cyan]{len(reinvent_sessions)}[/cyan] sessions from reinvent_catalog.json)"
+            )
+            wishlisted_count = sum(1 for s in reinvent_sessions if s.is_wishlisted)
+            console.print(f"  [green]★ {wishlisted_count}[/green] wishlisted (locked score 1.0)  |  "
+                          f"[dim]{len(reinvent_sessions) - wishlisted_count} to be scored by preferences[/dim]")
+            scored = scorer.score_reinvent_sessions(reinvent_sessions)
+        else:
+            if not all_events:
+                start = date.fromisoformat(ev_cfg["start_date"]) if ev_cfg.get("start_date") else None
+                end = date.fromisoformat(ev_cfg["end_date"]) if ev_cfg.get("end_date") else None
+                loc_text = ev_cfg.get("location_keyword")
+                loc_mode = ev_cfg.get("location_mode")
+            else:
+                start, end, loc_text, loc_mode = None, None, None, None
+
+            console.print(f"[bold]Fetching from public AWS Events catalog...[/bold]")
+            console.print(f"[dim](Run 'awsevents sync-wishlist' first to use the full re:Invent session catalog)[/dim]")
+            sessions = await fetch_sessions(
+                start_date=start, end_date=end,
+                location_text=loc_text, location_mode=loc_mode,
+            )
+            console.print(f"  Found [cyan]{len(sessions)}[/cyan] sessions")
+            scored = scorer.score_all(sessions)
+
         above = [s for s in scored if s.score >= min_score]
-        console.print(f"  [cyan]{len(above)}[/cyan] sessions with score >= {min_score}")
+        console.print(f"  [cyan]{len(above)}[/cyan] sessions with score >= {min_score}\n")
 
         if not above:
             console.print("[yellow]No sessions matched your preferences.[/yellow]")
-            if not all_events:
+            if not all_events and not reinvent_catalog_path.exists():
                 console.print(
-                    "[dim]re:Invent 2026 sessions are typically published ~2 months before the event "
-                    "(October 2026). Run [bold]awsevents plan --all-events[/bold] to test the pipeline "
-                    "with current catalog data, or check back in October.[/dim]"
+                    "[dim]re:Invent 2026 sessions open ~October 2026. "
+                    "Run [bold]awsevents plan --all-events[/bold] to test with current data.[/dim]"
                 )
             return
 
@@ -155,8 +230,10 @@ def plan(min_score: float, day: Optional[str], all_events: bool) -> None:
         if day:
             schedule = [ss for ss in schedule if ss.day == day]
 
-        console.print(f"\n[bold green]Schedule built:[/bold green] {len(schedule)} sessions across "
-                      f"{len(set(ss.day for ss in schedule))} days\n")
+        wishlisted_in_schedule = sum(1 for ss in schedule if ss.session.score == 1.0)
+        console.print(f"[bold green]Schedule built:[/bold green] {len(schedule)} sessions across "
+                      f"{len(set(ss.day for ss in schedule))} days  "
+                      f"([green]★ {wishlisted_in_schedule} wishlisted[/green])\n")
 
         _print_schedule(schedule)
 
