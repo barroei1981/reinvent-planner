@@ -9,3 +9,13 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+
+# Generated data — personal/large, not for repo
+reinvent_catalog.json
+wishlist.json
+reinvent2026.ics
+registration_results.json
+exclusions.json
+
+# UX planning artifacts
+_lch-output/

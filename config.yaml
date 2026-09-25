@@ -1,8 +1,8 @@
 # re:Invent 2026 Session Planner — edit this file with your preferences
 
 event:
-  # Date range for the conference
-  start_date: "2026-12-01"
+  # Date range for the conference (Nov 30 = pre-conf workshops day)
+  start_date: "2026-11-30"
   end_date: "2026-12-05"
   # Substring matched against the event location field
   location_keyword: "Las Vegas"
@@ -10,19 +10,33 @@ event:
   location_mode: "physical"
 
 preferences:
-  # ── re:Invent official topic tracks ──────────────────────────────────────
-  # List the AWS topic tracks you want to attend. Sessions whose track label
-  # matches get a bonus score on top of keyword matching.
-  # Full list: AI/ML, Analytics, Application Integration, Compute, Containers,
-  #   Database, Developer Tools, Management & Governance, Migration,
-  #   Networking & Content Delivery, Security, Serverless, Storage
+  # ── re:Invent "Topic" facet ───────────────────────────────────────────────
+  # Exact strings from the catalog's Topic filter panel.
+  # Sessions whose topic matches get a bonus score on top of keyword matching.
   topic_tracks:
-    - "AI/ML"
+    - "Artificial Intelligence"
+    - "Developer Tools"
     - "Analytics"
-    - "Security"
+    - "Security, Identity, & Compliance"
     - "Serverless"
 
-  # ── Session type preferences ─────────────────────────────────────────────
+  # ── re:Invent "Area of Interest" facet ───────────────────────────────────
+  # Exact strings from the catalog's Area of Interest filter panel.
+  # High-priority: these are the domains you care about most.
+  areas_of_interest:
+    - "Generative AI"
+    - "Agentic AI"
+    - "DevSecOps"
+    - "Machine Learning"
+    - "Data Analytics"
+
+  # ── re:Invent "Role" facet ────────────────────────────────────────────────
+  roles:
+    - "Developer / Engineer"
+    - "DevOps Engineer"
+    - "Solution / Systems Architect"
+
+  # ── Session type / format preferences ────────────────────────────────────
   # Preferred formats. Non-preferred types get a 0.7 score multiplier.
   # re:Invent types: Breakout Session, Builder Session, Chalk Talk, Code Talk,
   #   Innovation Talk, Leadership Session, Lightning Talk, Workshop
@@ -30,6 +44,7 @@ preferences:
     - "Breakout Session"
     - "Chalk Talk"
     - "Workshop"
+    - "Lecture-style"
 
   # ── Topics you care about, in priority order ──────────────────────────────
   # Each keyword is a case-insensitive substring matched against session title + description.
