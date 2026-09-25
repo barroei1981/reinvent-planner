@@ -134,8 +134,14 @@ def sync_wishlist_cmd(headless: bool) -> None:
     async def _run() -> None:
         console.print(f"[bold]Syncing re:Invent catalog from registration.awsevents.com...[/bold]")
         console.print(f"  Email: [cyan]{email}[/cyan]  |  Headless: {headless}")
+        api_cfg = config.get("catalog_api", {})
         try:
-            all_sessions, wishlisted = await sync_wishlist(email, password, headless=headless)
+            all_sessions, wishlisted = await sync_wishlist(
+                email, password,
+                headless=headless,
+                rf_profile_id=api_cfg.get("rf_profile_id", ""),
+                rf_widget_id=api_cfg.get("rf_widget_id", ""),
+            )
         except RuntimeError as exc:
             msg = str(exc)
             if "CATALOG_NOT_OPEN" in msg:

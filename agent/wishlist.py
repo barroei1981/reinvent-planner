@@ -41,17 +41,18 @@ except ImportError:
 _CATALOG_URL = "https://registration.awsevents.com/flow/awsevents/reinvent2026/event-catalog/page/eventCatalog"
 
 # catalog.awsevents.com REST API (Rainfocus)
+# Widget IDs are embedded in the event catalog page source — update in config.yaml if AWS rotates them.
 _CATALOG_API_BASE = "https://catalog.awsevents.com"
-_RF_PROFILE_ID = "jt8iJfCKNifsa0l2GD8VeKJXwDkZ9mHD"
-_RF_WIDGET_ID = "yloMDinvijFk6PtNtWambWamU6mPKiRf"
-_RF_API_HEADERS = {
+_RF_API_HEADERS_BASE = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Accept": "application/json",
     "Referer": "https://registration.awsevents.com/",
-    "rfapiprofileid": _RF_PROFILE_ID,
-    "rfwidgetid": _RF_WIDGET_ID,
     "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
 }
+
+
+def _rf_headers(profile_id: str, widget_id: str) -> dict:
+    return {**_RF_API_HEADERS_BASE, "rfapiprofileid": profile_id, "rfwidgetid": widget_id}
 _CHROME_PROFILE_1_COOKIES = (
     Path.home() / "Library/Application Support/Google/Chrome/Profile 1/Cookies"
 )
@@ -507,7 +508,7 @@ def _normalise_api_item(item: dict) -> Optional[ReinventSession]:
     )
 
 
-async def _fetch_catalog_via_api() -> tuple[list[ReinventSession], list[ReinventSession]]:
+async def _fetch_catalog_via_api(rf_profile_id: str, rf_widget_id: str) -> tuple[list[ReinventSession], list[ReinventSession]]:
     """Fetch all re:Invent sessions from the catalog.awsevents.com REST API.
 
     Uses browser_cookie3 to read auth cookies from Chrome Profile 1.
@@ -524,8 +525,8 @@ async def _fetch_catalog_via_api() -> tuple[list[ReinventSession], list[Reinvent
     cookies, rfjwt = _load_chrome_profile1_cookies()
     print(f"[catalog] Loaded {len(cookies)} cookies from Chrome Profile 1")
 
-    auth_headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    auth_headers = _rf_headers(rf_profile_id, rf_widget_id)
+    auth_headers.update({
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "Origin": "https://registration.awsevents.com",
@@ -533,9 +534,7 @@ async def _fetch_catalog_via_api() -> tuple[list[ReinventSession], list[Reinvent
             "https://registration.awsevents.com/flow/awsevents/reinvent2026/"
             "event-catalog/page/eventCatalog"
         ),
-        "rfApiProfileId": _RF_PROFILE_ID,
-        "rfWidgetId": _RF_WIDGET_ID,
-    }
+    })
     if rfjwt:
         auth_headers["rfAuthToken"] = rfjwt
 
@@ -699,7 +698,14 @@ def _normalise_raw(raw: dict) -> Optional[ReinventSession]:
 _CHROME_USER_DATA_DIR = Path.home() / "Library/Application Support/Google/Chrome"
 
 
-async def sync_wishlist(email: str, password: str, *, headless: bool = False) -> tuple[list[ReinventSession], list[ReinventSession]]:
+async def sync_wishlist(
+    email: str,
+    password: str,
+    *,
+    headless: bool = False,
+    rf_profile_id: str = "",
+    rf_widget_id: str = "",
+) -> tuple[list[ReinventSession], list[ReinventSession]]:
     """Fetch the full re:Invent catalog and user wishlist.
 
     Strategy 1 (preferred, no browser): catalog.awsevents.com REST API +
@@ -711,7 +717,7 @@ async def sync_wishlist(email: str, password: str, *, headless: bool = False) ->
     # ── Strategy 1: direct REST API (fast, no browser window) ─────────────
     if _API_AVAILABLE:
         try:
-            return await _fetch_catalog_via_api()
+            return await _fetch_catalog_via_api(rf_profile_id, rf_widget_id)
         except Exception as exc:
             print(f"[wishlist] API fetch failed ({exc}) — falling back to browser")
 

@@ -172,3 +172,10 @@ registration:
   max_sessions_to_register: 25
   # Headless browser (true = no visible window; false = show browser)
   headless: false
+
+catalog_api:
+  # Rainfocus widget IDs embedded in the re:Invent event catalog page source.
+  # Find them in DevTools → Network → any /api/sessions request headers.
+  # Update here if AWS rotates them between conference years.
+  rf_profile_id: "jt8iJfCKNifsa0l2GD8VeKJXwDkZ9mHD"
+  rf_widget_id: "yloMDinvijFk6PtNtWambWamU6mPKiRf"
