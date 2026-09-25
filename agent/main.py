@@ -290,6 +290,281 @@ def list_sessions(min_score: float, top: int, all_events: bool) -> None:
 
 
 @cli.command()
+def setup() -> None:
+    """Interactive wizard: configure preferences, fetch catalog, review sessions, build schedule, export ICS."""
+    from agent.wizard import run_wizard
+    run_wizard()
+
+
+@cli.command("schedule")
+@click.option("--day", default=None, help="Show only this day, e.g. 2026-12-01")
+def show_schedule(day: str | None) -> None:
+    """Display saved schedule day-by-hour with venue and travel warnings."""
+    from agent.wizard import print_schedule
+
+    if not _SCHEDULE_PATH.exists():
+        console.print("[red]schedule.json not found — run 'awsevents plan' or 'awsevents setup' first[/red]")
+        return
+
+    with open(_SCHEDULE_PATH) as f:
+        data = json.load(f)
+
+    if day:
+        data = [s for s in data if s.get("start_date") == day]
+        if not data:
+            console.print(f"[yellow]No sessions found for {day}[/yellow]")
+            return
+
+    print_schedule(data)
+
+
+@cli.command()
+@click.option("--path", default="reinvent2026.ics", help="Output file path")
+def export_ics(path: str) -> None:
+    """Export schedule to an ICS calendar file for Apple Calendar / Google Calendar / Outlook."""
+    from agent.wizard import export_ics as _export
+
+    if not _SCHEDULE_PATH.exists():
+        console.print("[red]schedule.json not found — run 'awsevents plan' or 'awsevents setup' first[/red]")
+        return
+
+    with open(_SCHEDULE_PATH) as f:
+        data = json.load(f)
+
+    out = Path(path)
+    _export(data, out)
+    console.print(f"[green]✓ Exported {len(data)} sessions to {out}[/green]")
+    console.print("[dim]Import into Apple Calendar: File → Import | Google: Settings → Import & Export[/dim]")
+
+
+@cli.command()
+@click.option("--day", default=None, help="Day to edit, e.g. 2026-12-01 (skip to pick interactively)")
+@click.option("--time", "time_slot", default=None, help="Time slot to replace, e.g. 13:00")
+@click.option("--all", "show_all", is_flag=True, default=False, help="Show all matching sessions, not just top recommendations")
+@click.option("--html", "with_html", is_flag=True, default=False, help="Open alternatives in browser")
+def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool) -> None:
+    """Swap a session in your schedule. Pick a time slot, see recommended alternatives."""
+    if not _SCHEDULE_PATH.exists():
+        console.print("[red]schedule.json not found — run 'awsevents plan' or 'awsevents setup' first[/red]")
+        return
+
+    with open(_SCHEDULE_PATH) as f:
+        schedule = json.load(f)
+
+    config = _load_config()
+    prefs = config.get("preferences", {})
+    target_aoi = set(prefs.get("areas_of_interest", []))
+    target_topics = set(prefs.get("topic_tracks", []))
+
+    from agent.wizard import print_schedule, _DAY_NAMES, _HOP_MINUTES, _venue_cluster
+    from agent.html_views import html_slot_alternatives, open_in_browser
+    from datetime import datetime, timedelta
+
+    # Pick day
+    days = sorted(set(s.get("start_date", "") for s in schedule if s.get("start_date")))
+    if not day:
+        console.print("\n[bold]Days in your schedule:[/bold]")
+        for i, d in enumerate(days, 1):
+            sessions_on_day = [s for s in schedule if s.get("start_date") == d]
+            console.print(f"  {i}. {_DAY_NAMES.get(d, d)}  ({len(sessions_on_day)} sessions)")
+        raw = click.prompt("  Pick day (number or YYYY-MM-DD)", default="1")
+        if raw.strip().isdigit():
+            idx = int(raw.strip()) - 1
+            day = days[idx] if 0 <= idx < len(days) else days[0]
+        else:
+            day = raw.strip()
+
+    day_sessions = sorted(
+        [s for s in schedule if s.get("start_date") == day],
+        key=lambda x: x.get("scheduled_start") or x.get("start_time") or "",
+    )
+
+    # Show day's sessions and pick a slot
+    console.print(f"\n[bold]{_DAY_NAMES.get(day, day)} — current schedule:[/bold]")
+    for i, s in enumerate(day_sessions, 1):
+        t = (s.get("scheduled_start") or "")[-8:-3] if s.get("scheduled_start") else (s.get("start_time") or "?")[:5]
+        te = (s.get("scheduled_end") or "")[-8:-3] if s.get("scheduled_end") else "?"
+        lvl = (s.get("learning_level") or "—")[:4]
+        console.print(f"  {i}. {t}–{te}  [{lvl}]  {s['title'][:65]}")
+
+    if not time_slot:
+        raw = click.prompt("  Which slot to replace? (number or HH:MM)", default="1")
+        if raw.strip().isdigit():
+            idx = int(raw.strip()) - 1
+            target_session = day_sessions[idx] if 0 <= idx < len(day_sessions) else None
+        else:
+            time_slot = raw.strip()
+            target_session = next((s for s in day_sessions if (s.get("start_time") or "").startswith(time_slot[:5])), None)
+    else:
+        target_session = next((s for s in day_sessions if (s.get("start_time") or "").startswith(time_slot[:5])), None)
+
+    if not target_session:
+        console.print(f"[red]Session not found[/red]")
+        return
+
+    # Determine free window
+    try:
+        slot_start = datetime.fromisoformat(target_session["scheduled_start"])
+        slot_end   = datetime.fromisoformat(target_session["scheduled_end"])
+    except Exception:
+        console.print("[red]Cannot parse session times[/red]")
+        return
+
+    console.print(f"\n  Replacing: [bold red]{target_session['title'][:70]}[/bold red]")
+    console.print(f"  Window: {slot_start.strftime('%H:%M')} – {slot_end.strftime('%H:%M')}\n")
+
+    # Load catalog and find alternatives for this slot
+    catalog_path = Path("reinvent_catalog.json")
+    if not catalog_path.exists():
+        console.print("[red]reinvent_catalog.json not found — run 'awsevents sync-wishlist' first[/red]")
+        return
+
+    from agent.wishlist import load_catalog
+    from agent.scorer import Scorer
+
+    all_sessions = load_catalog()
+    scorer = Scorer(prefs)
+    scored_all = scorer.score_reinvent_sessions(all_sessions)
+
+    scheduled_ids = {s["event_id"] for s in schedule if s["event_id"] != target_session["event_id"]}
+    other_day_sessions = [s for s in schedule if s.get("start_date") == day and s["event_id"] != target_session["event_id"]]
+
+    def _conflicts(candidate) -> bool:
+        cand_start_str = candidate.start_time
+        if not cand_start_str:
+            return False
+        try:
+            cand_start = datetime.strptime(f"{day}T{cand_start_str}", "%Y-%m-%dT%H:%M")
+        except Exception:
+            return False
+        dur = 60
+        stype = (candidate.event_type or "").lower()
+        if "workshop" in stype:
+            dur = 120
+        cand_end = cand_start + timedelta(minutes=dur)
+        for other in other_day_sessions:
+            try:
+                o_start = datetime.fromisoformat(other["scheduled_start"])
+                o_end   = datetime.fromisoformat(other["scheduled_end"])
+                if max(cand_start, o_start) < min(cand_end, o_end):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    conf_days = {"2026-11-30","2026-12-01","2026-12-02","2026-12-03","2026-12-04","2026-12-05"}
+    alternatives = [
+        s for s in scored_all
+        if s.event_id not in scheduled_ids
+        and str(s.start_date) == day
+        and str(s.start_date) in conf_days
+        and not _conflicts(s)
+    ]
+
+    if not show_all:
+        # Recommended: score >= 0.2, sorted by score, top 15
+        alternatives = sorted([s for s in alternatives if s.score >= 0.2], key=lambda x: -x.score)[:15]
+    else:
+        alternatives = sorted(alternatives, key=lambda x: -x.score)
+
+    if not alternatives:
+        console.print("[yellow]No alternatives found for this slot that don't conflict with your other sessions.[/yellow]")
+        return
+
+    # Convert to dicts for HTML view
+    alt_dicts = []
+    for s in alternatives:
+        alt_dicts.append({
+            "event_id": s.event_id,
+            "title": s.title,
+            "description": s.description or "",
+            "start_time": s.start_time,
+            "location": s.location,
+            "learning_level": s.learning_level,
+            "session_type": s.event_type,
+            "areas_of_interest": [],
+            "score": s.score,
+            "registration_url": s.registration_url,
+        })
+
+    time_window = f"{slot_start.strftime('%H:%M')}–{slot_end.strftime('%H:%M')}"
+
+    if with_html:
+        html = html_slot_alternatives(alt_dicts, day, time_window)
+        path = open_in_browser(html, "edit_alternatives.html")
+        console.print(f"  [dim]HTML view: file://{path}[/dim]")
+
+    # Console list
+    t = __import__("rich.table", fromlist=["Table"]).Table(box=__import__("rich", fromlist=["box"]).box.SIMPLE)
+    t.add_column("#", width=4, style="dim")
+    t.add_column("Score", width=6)
+    t.add_column("Level", width=13)
+    t.add_column("Time", width=6)
+    t.add_column("Title", min_width=55)
+    t.add_column("Venue", width=22)
+
+    for i, s in enumerate(alternatives, 1):
+        t.add_row(
+            str(i),
+            f"[cyan]{s.score:.2f}[/cyan]",
+            s.learning_level or "—",
+            s.start_time or "—",
+            f"[bold]{s.title[:65]}[/bold]",
+            (s.location or "—")[:22],
+        )
+    console.print(t)
+
+    if not with_html and click.confirm("  Open in browser?", default=False):
+        html = html_slot_alternatives(alt_dicts, day, time_window)
+        open_in_browser(html, "edit_alternatives.html")
+
+    console.print("[dim]Enter number to swap in, or 'q' to cancel[/dim]")
+    raw = click.prompt("  Choice", default="q").strip()
+    if raw == "q":
+        return
+
+    if raw.isdigit():
+        pick = int(raw) - 1
+        if 0 <= pick < len(alternatives):
+            new_session = alternatives[pick]
+            # Build replacement entry
+            try:
+                new_start = datetime.strptime(f"{day}T{new_session.start_time}", "%Y-%m-%dT%H:%M")
+            except Exception:
+                new_start = slot_start
+            dur_min = 120 if "workshop" in (new_session.event_type or "").lower() else 60
+            new_end = new_start + timedelta(minutes=dur_min)
+
+            replacement = {
+                "event_id": new_session.event_id,
+                "title": new_session.title,
+                "description": (new_session.description or "")[:300],
+                "start_date": day,
+                "start_time": new_session.start_time,
+                "time_zone": new_session.time_zone,
+                "location": new_session.location,
+                "location_mode": new_session.location_mode,
+                "learning_level": new_session.learning_level,
+                "event_type": new_session.event_type,
+                "score": new_session.score,
+                "registration_url": new_session.registration_url,
+                "learn_more_url": new_session.learn_more_url,
+                "scheduled_start": new_start.isoformat(),
+                "scheduled_end": new_end.isoformat(),
+            }
+
+            # Swap in schedule
+            updated = [replacement if s["event_id"] == target_session["event_id"] else s for s in schedule]
+            updated.sort(key=lambda x: (x.get("start_date", ""), x.get("scheduled_start") or ""))
+
+            with open(_SCHEDULE_PATH, "w") as f:
+                json.dump(updated, f, indent=2)
+
+            console.print(f"\n  [green]✓ Swapped in:[/green] [bold]{new_session.title[:70]}[/bold]")
+            console.print(f"  [dim]schedule.json updated. Run 'awsevents schedule' to review.[/dim]")
+
+
+@cli.command()
 def register() -> None:
     """Register for sessions from saved schedule.json immediately."""
     _do_register(watch=False)

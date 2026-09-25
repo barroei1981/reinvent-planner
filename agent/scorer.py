@@ -68,8 +68,10 @@ class Scorer:
         mults = preferences.get("level_multipliers", {})
         self._multipliers = {**_DEFAULT_MULTIPLIERS, **mults}
 
-        # re:Invent topic track preferences (optional; extends domain keywords)
+        # re:Invent catalog facets (exact strings from the filter panel)
         self._topic_tracks: set[str] = set(preferences.get("topic_tracks", []))
+        self._areas_of_interest: set[str] = set(preferences.get("areas_of_interest", []))
+        self._roles: set[str] = set(preferences.get("roles", []))
         self._session_types: set[str] = set(t.lower() for t in preferences.get("session_types", []))
 
     def _domain_score_text(self, text: str) -> float:
@@ -82,7 +84,7 @@ class Scorer:
         return total
 
     def _track_score(self, topics: list[str]) -> float:
-        """Bonus for sessions whose topic track matches user preferences."""
+        """Bonus for sessions whose Topic facet matches user preferences."""
         if not self._topic_tracks or not topics:
             return 0.0
         score = 0.0
@@ -94,6 +96,34 @@ class Scorer:
                 if track_name in self._topic_tracks:
                     if any(kw in t.lower() for kw in kws):
                         score += 3.0
+        return score
+
+    def _aoi_score(self, areas: list[str]) -> float:
+        """Bonus for sessions whose Area of Interest matches user preferences.
+
+        These are re:Invent-specific facet strings like 'Generative AI', 'Agentic AI'.
+        Exact match = 8 pts (high signal), partial = 3 pts.
+        """
+        if not self._areas_of_interest or not areas:
+            return 0.0
+        score = 0.0
+        for a in areas:
+            if a in self._areas_of_interest:
+                score += 8.0
+            else:
+                for pref in self._areas_of_interest:
+                    if pref.lower() in a.lower() or a.lower() in pref.lower():
+                        score += 3.0
+        return score
+
+    def _role_score(self, roles: list[str]) -> float:
+        """Small bonus when the session targets roles the user identifies with."""
+        if not self._roles or not roles:
+            return 0.0
+        score = 0.0
+        for r in roles:
+            if r in self._roles:
+                score += 2.0
         return score
 
     def _type_multiplier(self, session_type: str | None) -> float:
@@ -149,10 +179,11 @@ class Scorer:
 
             # Convert to catalog.Session
             from datetime import date as dt_date
+            _CONFERENCE_START = dt_date(2026, 11, 30)
             try:
-                start_date = dt_date.fromisoformat(rs.date) if rs.date else dt_date.today()
+                start_date = dt_date.fromisoformat(rs.date) if rs.date else _CONFERENCE_START
             except (ValueError, TypeError):
-                start_date = dt_date.today()
+                start_date = _CONFERENCE_START
 
             level = _level_from_str(rs.level)
 
@@ -178,12 +209,14 @@ class Scorer:
                 result.append((s, float("inf")))
                 continue
 
-            text = f"{rs.title} {rs.description} {' '.join(rs.topics)}".lower()
+            text = f"{rs.title} {rs.description} {' '.join(rs.topics)} {' '.join(getattr(rs, 'areas_of_interest', []))}".lower()
             domain = self._domain_score_text(text)
             track = self._track_score(rs.topics)
+            aoi = self._aoi_score(getattr(rs, "areas_of_interest", []))
+            role = self._role_score(getattr(rs, "roles", []))
             type_m = self._type_multiplier(rs.session_type)
             level_m = self._level_multiplier(level)
-            raw_score = (domain + track) * type_m * level_m
+            raw_score = (domain + track + aoi + role) * type_m * level_m
             result.append((s, raw_score))
 
         if not result:
