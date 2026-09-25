@@ -1,7 +1,8 @@
 """Playwright-based automatic seat registration for re:Invent 2026.
 
 Flow:
-  1. Log in to builder.aws.com (AWS Builder profile / SSO).
+  1. Launch Chrome with your existing Profile 1 (already authenticated from sync-wishlist).
+     Falls back to fresh Chromium + credential login if the profile is unavailable.
   2. For each session in priority order:
      a. Navigate to the session's registration_url.
      b. Find and click the "Reserve Seat" / "Register" button.
@@ -9,14 +10,15 @@ Flow:
   3. In watch mode, poll every N seconds until seats open, then register.
 
 Environment:
-  AWSEVENTS_PASSWORD — your AWS Builder account password (set in .env)
+  AWSEVENTS_PASSWORD — your AWS Builder account password (set in .env, used as fallback only)
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from agent.catalog import Session
@@ -28,9 +30,8 @@ try:
 except ImportError:
     _PLAYWRIGHT_AVAILABLE = False
 
-
-_LOGIN_URL = "https://builder.aws.com"
-_REINVENT_CATALOG_URL = "https://registration.awsevents.com/flow/awsevents/reinvent26/sessioncatalog/page/page"
+_CHROME_USER_DATA_DIR = Path.home() / "Library/Application Support/Google/Chrome"
+_REGISTRATION_BASE = "https://registration.awsevents.com"
 
 _REGISTER_BUTTON_SELECTORS = [
     "button:has-text('Reserve Seat')",
@@ -45,6 +46,7 @@ _FULL_INDICATORS = [
     "no seats available",
     "waitlist",
     "sold out",
+    "at capacity",
 ]
 
 _NOT_OPEN_INDICATORS = [
@@ -52,6 +54,7 @@ _NOT_OPEN_INDICATORS = [
     "coming soon",
     "not available yet",
     "opens on",
+    "check back",
 ]
 
 
@@ -62,43 +65,67 @@ class RegistrationResult:
     message: str = ""
 
 
-async def _login(page: Page, email: str, password: str) -> bool:
-    """Log in to AWS Builder profile. Returns True on success."""
-    await page.goto(_LOGIN_URL, wait_until="networkidle")
+async def _ensure_logged_in(page: Page, email: str, password: str) -> None:
+    """If we land on a login page, complete the AWS Builder ID login flow.
 
-    # Accept cookies if present
-    try:
-        await page.click("button:has-text('Accept')", timeout=3000)
-    except Exception:
-        pass
+    Called after navigating to each session URL so re-auth is handled automatically
+    if the session cookie expires mid-run.
+    """
+    url = page.url.lower()
+    if not ("signin.aws" in url or "login" in url or "sso" in url or "auth" in url):
+        return  # already on the target page
 
-    # Fill email
+    print("[registrar] Login page detected — filling credentials...")
+
+    # Email step
     try:
-        await page.fill("input[type='email'], input[name='email'], #email", email, timeout=5000)
-        await page.press("input[type='email'], input[name='email'], #email", "Enter")
+        email_sel = "input[type='email'], input[name='email'], #email, input[placeholder*='email' i]"
+        await page.wait_for_selector(email_sel, timeout=6000)
+        await page.fill(email_sel, email)
+        for cont in ["button:has-text('Continue')", "input[type='submit']", "button[type='submit']"]:
+            try:
+                await page.click(cont, timeout=2000)
+                break
+            except Exception:
+                pass
         await page.wait_for_load_state("networkidle")
     except Exception:
         pass
 
-    # Fill password
+    # Password step
     try:
-        await page.fill("input[type='password'], input[name='password'], #password", password, timeout=5000)
-        await page.press("input[type='password'], input[name='password'], #password", "Enter")
+        pw_sel = "input[type='password'], input[name='password'], #password"
+        await page.wait_for_selector(pw_sel, timeout=6000)
+        await page.fill(pw_sel, password)
+        for cont in ["button:has-text('Sign in')", "button:has-text('Continue')", "input[type='submit']"]:
+            try:
+                await page.click(cont, timeout=2000)
+                break
+            except Exception:
+                pass
         await page.wait_for_load_state("networkidle")
     except Exception:
         pass
 
-    # Confirm we're logged in by checking for user-specific element
-    try:
-        await page.wait_for_selector("[data-testid='user-menu'], .user-profile, .logged-in", timeout=8000)
-        return True
-    except Exception:
-        return False
+    # If still on login, prompt for manual completion
+    if any(x in page.url.lower() for x in ("signin.aws", "login", "sso", "auth")):
+        print(
+            "\n[registrar] ──────────────────────────────────────────────────\n"
+            "[registrar] Automated login could not complete.\n"
+            "[registrar] Please finish logging in manually in the browser window.\n"
+            "[registrar] Waiting up to 3 minutes...\n"
+            "[registrar] ──────────────────────────────────────────────────"
+        )
+        try:
+            await page.wait_for_url(
+                re.compile(r"(reinvent2026|eventCatalog|event-catalog|registration\.awsevents)", re.I),
+                timeout=300_000,  # 5 minutes — matches wishlist.py
+            )
+        except Exception:
+            pass
 
 
-async def _try_register_session(
-    page: Page, session: Session
-) -> RegistrationResult:
+async def _try_register_session(page: Page, session: Session, email: str, password: str) -> RegistrationResult:
     """Navigate to a session and attempt to reserve a seat."""
     url = session.registration_url
     if not url:
@@ -108,6 +135,9 @@ async def _try_register_session(
         await page.goto(url, wait_until="networkidle", timeout=30000)
     except Exception as exc:
         return RegistrationResult(session=session, status="error", message=str(exc))
+
+    # Handle any login redirect
+    await _ensure_logged_in(page, email, password)
 
     page_text = (await page.content()).lower()
 
@@ -132,12 +162,49 @@ async def _try_register_session(
                 confirm_text = (await page.content()).lower()
                 if "registered" in confirm_text or "confirmed" in confirm_text or "success" in confirm_text:
                     return RegistrationResult(session=session, status="registered")
-                # If no clear confirmation, treat as registered
                 return RegistrationResult(session=session, status="registered", message="clicked (no explicit confirmation)")
         except Exception:
             continue
 
     return RegistrationResult(session=session, status="error", message="register button not found")
+
+
+async def _launch_context(pw, headless: bool, email: str, password: str):
+    """Launch Chrome Profile 1 (preferred) or fall back to fresh Chromium."""
+    chrome_profile = _CHROME_USER_DATA_DIR
+    if chrome_profile.exists():
+        try:
+            print("[registrar] Launching Chrome with your existing profile (auto-login)...")
+            context = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(chrome_profile),
+                channel="chrome",
+                headless=headless,
+                viewport={"width": 1440, "height": 900},
+                args=["--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble"],
+            )
+            page = context.pages[0] if context.pages else await context.new_page()
+            return context, page
+        except Exception as exc:
+            print(f"[registrar] Chrome profile launch failed ({exc}) — falling back to Chromium + credentials...")
+
+    # Fallback: fresh Chromium, login will happen on first redirect
+    browser = await pw.chromium.launch(headless=headless)
+    context = await browser.new_context(
+        viewport={"width": 1440, "height": 900},
+        user_agent=(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+    )
+    page = await context.new_page()
+    # Pre-warm: navigate to registration so auth cookie is established before session pages
+    try:
+        print(f"[registrar] Pre-warming session on {_REGISTRATION_BASE}...")
+        await page.goto(_REGISTRATION_BASE, wait_until="networkidle", timeout=20000)
+        await _ensure_logged_in(page, email, password)
+    except Exception:
+        pass
+    return context, page
 
 
 class Registrar:
@@ -161,10 +228,9 @@ class Registrar:
     ) -> list[RegistrationResult]:
         """Register for sessions in the given schedule.
 
-        If watch=True, poll until sessions open and then register.
+        If watch=True, retries not-yet-open sessions until they open.
         Returns list of RegistrationResult for each attempt.
         """
-        # Build priority-ordered session list (score desc)
         sessions = sorted(
             [ss.session for ss in schedule if ss.session.registration_url],
             key=lambda s: s.score,
@@ -174,22 +240,12 @@ class Registrar:
         results: list[RegistrationResult] = []
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=self._headless)
-            context: BrowserContext = await browser.new_context(
-                viewport={"width": 1280, "height": 900},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            )
-            page = await context.new_page()
-
-            print(f"[registrar] Logging in as {self._email}...")
-            logged_in = await _login(page, self._email, self._password)
-            if not logged_in:
-                print("[registrar] WARNING: Login may not have succeeded — proceeding anyway")
+            context, page = await _launch_context(pw, self._headless, self._email, self._password)
 
             for session in sessions:
                 retries = 0
                 while retries <= self._max_retries:
-                    result = await _try_register_session(page, session)
+                    result = await _try_register_session(page, session, self._email, self._password)
                     print(f"  [{result.status}] {session.title[:60]}")
                     if result.status == "not_open" and watch:
                         print(f"    → not open yet, will retry in {self._interval}s")
@@ -199,35 +255,28 @@ class Registrar:
                     results.append(result)
                     break
 
-            await browser.close()
+            await context.close()
 
         return results
 
     async def watch_and_register(self, schedule: list[ScheduledSession]) -> list[RegistrationResult]:
-        """Continuously poll until sessions open, then register. Blocks until done."""
-        sessions_todo = [
-            ss.session for ss in schedule if ss.session.registration_url
-        ][: self._max_sessions]
-        sessions_todo.sort(key=lambda s: s.score, reverse=True)
+        """Continuously poll until all sessions open, then register. Blocks until done."""
+        sessions_todo = sorted(
+            [ss.session for ss in schedule if ss.session.registration_url],
+            key=lambda s: s.score,
+            reverse=True,
+        )[: self._max_sessions]
 
         results: dict[str, RegistrationResult] = {}
         pending = list(sessions_todo)
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=self._headless)
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 900},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            )
-            page = await context.new_page()
-
-            print(f"[registrar] Logging in as {self._email}...")
-            await _login(page, self._email, self._password)
+            context, page = await _launch_context(pw, self._headless, self._email, self._password)
 
             while pending:
                 still_pending = []
                 for session in pending:
-                    result = await _try_register_session(page, session)
+                    result = await _try_register_session(page, session, self._email, self._password)
                     print(f"  [{result.status}] {session.title[:60]}")
                     if result.status == "not_open":
                         still_pending.append(session)
@@ -240,6 +289,6 @@ class Registrar:
 
                 pending = still_pending
 
-            await browser.close()
+            await context.close()
 
         return list(results.values())
