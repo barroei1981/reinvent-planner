@@ -745,6 +745,38 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
 
 
 @cli.command()
+@click.option("--port", default=8080, show_default=True, type=int, help="Local port for the web UI")
+@click.option("--no-open", "no_open", is_flag=True, default=False, help="Don't auto-open browser")
+def serve(port: int, no_open: bool) -> None:
+    """Open the schedule in a browser with live edit controls.
+
+    Starts a local web server so you can swap sessions, add backups,
+    and remove sessions directly from the schedule view — no terminal
+    prompts needed.
+
+    \b
+    Requires: uv sync --extra mcp  (pulls in uvicorn + starlette)
+    """
+    import uvicorn
+    from agent.serve import create_app
+
+    if not _SCHEDULE_PATH.exists():
+        console.print("[red]schedule.json not found — run 'awsevents plan' first[/red]")
+        return
+
+    url = f"http://localhost:{port}"
+    console.print(f"[bold]re:Invent Planner[/bold]  [dim]live edit UI[/dim]")
+    console.print(f"  [cyan]{url}[/cyan]")
+    console.print(f"  [dim]Ctrl+C to stop[/dim]\n")
+
+    if not no_open:
+        import threading
+        threading.Timer(1.2, lambda: __import__("webbrowser").open(url)).start()
+
+    uvicorn.run(create_app(port=port), host="127.0.0.1", port=port, log_level="warning")
+
+
+@cli.command()
 def register() -> None:
     """Register for sessions from saved schedule.json immediately."""
     _do_register(watch=False)

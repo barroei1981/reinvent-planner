@@ -21,6 +21,7 @@ Use it as a **CLI tool**, connect it to **Claude Desktop / Cursor / VS Code** vi
 | **ICS export** | One command exports your schedule to a `.ics` file — import into Google Calendar, Apple Calendar, or Outlook. |
 | **Auto-register** | Playwright logs into registration.awsevents.com and clicks Reserve Seat for every session in your schedule. `watch` mode polls until seats open. |
 | **Wizard** | `awsevents setup` walks you through every step interactively with console + HTML views at each stage. |
+| **Live edit UI** | `awsevents serve` opens the schedule in a browser — swap sessions, add backups, and remove sessions directly from the cards. |
 | **MCP server** | Expose all features as MCP tools — locally via stdio or remotely over HTTP for Claude.ai, ChatGPT, Gemini, and Perplexity. |
 
 ---
@@ -240,6 +241,10 @@ uv run awsevents sync-wishlist
 # Score sessions and build an optimised schedule → saves schedule.json
 uv run awsevents plan
 
+# Open the schedule in a browser with live swap/backup/remove controls
+uv run awsevents serve                  # opens http://localhost:8080
+uv run awsevents serve --port 9000      # custom port
+
 # Show schedule day-by-hour in the terminal (+ optional HTML view)
 uv run awsevents schedule
 
@@ -356,8 +361,9 @@ agent/
   registrar.py    — Playwright auto-registration (primary + backup flow)
   wizard.py       — 7-step interactive setup wizard
   html_views.py   — self-contained HTML view generator (Glass design)
-  main.py         — CLI entry point (click) — plan / list / register / watch
+  main.py         — CLI entry point (click) — plan / list / serve / register / watch
   mcp_server.py   — MCP server (stdio + HTTP transports)
+  serve.py        — Starlette web server for the live edit UI
 config.yaml       — all user preferences, no credentials
 .env              — AWSEVENTS_PASSWORD + AWS_PROFILE (gitignored)
 ```
