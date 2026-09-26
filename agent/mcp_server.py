@@ -97,7 +97,9 @@ def _session_to_dict(s: Any, scheduled_start: Optional[str] = None) -> dict:
         "learning_level": s.learning_level,
         "event_type": s.event_type,
         "score": round(s.score, 4),
+        "partner_name": s.partner_name,
         "registration_url": s.registration_url,
+        "learn_more_url": s.learn_more_url,
         **({"scheduled_start": scheduled_start} if scheduled_start else {}),
     }
 
@@ -132,6 +134,7 @@ async def list_sessions(
     min_score: float = 0.1,
     keyword: str = "",
     day: str = "",
+    partner: str = "",
     top: int = 30,
 ) -> str:
     """Fetch and score re:Invent 2026 sessions from the AWS Events catalog.
@@ -140,11 +143,14 @@ async def list_sessions(
         min_score: Minimum relevance score 0–1 (default 0.1).
         keyword:   Optional substring to filter session titles/descriptions.
         day:       Optional day filter as YYYY-MM-DD (e.g. "2026-12-02").
+        partner:   Optional sponsor/partner name filter (e.g. "Anthropic", "Datadog").
+                   Case-insensitive substring match against the session's partner_name field.
         top:       Maximum number of sessions to return (default 30).
 
     Returns JSON array of sessions sorted by score descending.
     Each session includes event_id, title, description (truncated), start_date,
-    start_time, location, learning_level, event_type, score, registration_url.
+    start_time, location, learning_level, event_type, score, registration_url,
+    learn_more_url, and partner_name.
     """
     config = _load_config()
     scored = await _fetch_and_score(config)
@@ -155,6 +161,9 @@ async def list_sessions(
     if keyword:
         kw = keyword.lower()
         results = [s for s in results if kw in s.title.lower() or kw in (s.description or "").lower()]
+    if partner:
+        pn = partner.lower()
+        results = [s for s in results if pn in (s.partner_name or "").lower()]
 
     results.sort(key=lambda s: s.score, reverse=True)
     return json.dumps([_session_to_dict(s) for s in results[:top]], indent=2)
@@ -208,6 +217,51 @@ def get_schedule() -> str:
         return json.dumps([])
     with open(_SCHEDULE_PATH) as f:
         return f.read()
+
+
+@mcp.tool()
+async def get_event_details(event_id: str) -> str:
+    """Return full details for a single re:Invent session by its event ID.
+
+    Use this after list_sessions or get_schedule to drill into a specific
+    session — it returns the complete record including the full description,
+    partner name, learn_more_url, and all metadata fields.
+
+    Args:
+        event_id: The event_id from a previous list_sessions or get_schedule call.
+
+    Returns a single session JSON object, or an error message if not found.
+    """
+    config = _load_config()
+    scored = await _fetch_and_score(config)
+
+    session = next((s for s in scored if s.event_id == event_id), None)
+    if not session:
+        # Fall back to checking the saved schedule
+        if _SCHEDULE_PATH.exists():
+            with open(_SCHEDULE_PATH) as f:
+                schedule = json.load(f)
+            entry = next((s for s in schedule if s.get("event_id") == event_id), None)
+            if entry:
+                return json.dumps(entry, indent=2)
+        return json.dumps({"error": f"Session {event_id!r} not found in catalog or schedule."})
+
+    return json.dumps({
+        "event_id": session.event_id,
+        "title": session.title,
+        "description": session.description or "",
+        "start_date": session.start_date.isoformat() if session.start_date else None,
+        "start_time": session.start_time,
+        "time_zone": session.time_zone,
+        "location": session.location,
+        "location_mode": session.location_mode,
+        "learning_level": session.learning_level,
+        "event_type": session.event_type,
+        "partner_name": session.partner_name,
+        "score": round(session.score, 4),
+        "registration_url": session.registration_url,
+        "learn_more_url": session.learn_more_url,
+    }, indent=2)
 
 
 @mcp.tool()
