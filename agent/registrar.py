@@ -207,6 +207,19 @@ async def _launch_context(pw, headless: bool, email: str, password: str):
     return context, page
 
 
+_SUCCESS = ("registered", "already_registered")
+_PERMANENT_FAIL = ("full", "error")   # not_open is retriable; these are not
+
+
+def _backup_map(schedule: list[ScheduledSession]) -> dict[str, ScheduledSession]:
+    """Build {slot_key → backup ScheduledSession} from a schedule list."""
+    return {
+        ss.start.isoformat()[:16]: ss
+        for ss in schedule
+        if ss.backup and ss.session.registration_url
+    }
+
+
 class Registrar:
     def __init__(self, reg_config: dict, email: str, password: str) -> None:
         if not _PLAYWRIGHT_AVAILABLE:
@@ -220,93 +233,143 @@ class Registrar:
         self._max_retries: int = int(reg_config.get("max_retries", 3))
         self._max_sessions: int = int(reg_config.get("max_sessions_to_register", 25))
 
+    async def _attempt_with_backup(
+        self,
+        page,
+        ss: ScheduledSession,
+        backups: dict[str, ScheduledSession],
+        results: list[RegistrationResult],
+        *,
+        label: str = "",
+    ) -> bool:
+        """Try to register one session; on permanent failure try its backup.
+
+        Returns True if the slot ended up with a successful registration.
+        """
+        session = ss.session
+        result = await _try_register_session(page, session, self._email, self._password)
+        tag = f"[{label}] " if label else ""
+        print(f"  {tag}[{result.status}] {session.title[:60]}")
+        results.append(result)
+
+        if result.status in _SUCCESS:
+            return True
+
+        if result.status in _PERMANENT_FAIL:
+            slot = ss.start.isoformat()[:16]
+            backup_ss = backups.get(slot)
+            if backup_ss:
+                print(f"  → primary {result.status} — trying backup: {backup_ss.session.title[:55]}")
+                backup_result = await _try_register_session(
+                    page, backup_ss.session, self._email, self._password
+                )
+                print(f"  [backup·{backup_result.status}] {backup_ss.session.title[:60]}")
+                results.append(backup_result)
+                return backup_result.status in _SUCCESS
+
+        return False
+
     async def register_schedule(
         self,
         schedule: list[ScheduledSession],
         *,
         watch: bool = False,
     ) -> list[RegistrationResult]:
-        """Register for sessions in the given schedule.
+        """Register all primary sessions; fall back to backups on permanent failure.
 
-        Primary sessions are registered first. If a primary fails (full/error),
-        the backup session for that time slot is tried automatically.
-        If watch=True, retries not-yet-open sessions until they open.
+        With watch=True retries not-yet-open sessions up to max_retries times
+        before attempting the backup.
         """
         primaries = sorted(
             [ss for ss in schedule if ss.session.registration_url and not ss.backup],
             key=lambda ss: ss.session.score,
             reverse=True,
         )[: self._max_sessions]
-
-        # Map slot → backup session for fallback
-        backups: dict[str, ScheduledSession] = {}
-        for ss in schedule:
-            if ss.backup and ss.session.registration_url:
-                backups[ss.start.isoformat()[:16]] = ss
-
+        backups = _backup_map(schedule)
         results: list[RegistrationResult] = []
 
         async with async_playwright() as pw:
             context, page = await _launch_context(pw, self._headless, self._email, self._password)
 
             for ss in primaries:
-                session = ss.session
                 retries = 0
-                registered = False
-                while retries <= self._max_retries:
-                    result = await _try_register_session(page, session, self._email, self._password)
-                    print(f"  [{result.status}] {session.title[:60]}")
-                    if result.status == "not_open" and watch:
-                        print(f"    → not open yet, will retry in {self._interval}s")
+                while True:
+                    result = await _try_register_session(page, ss.session, self._email, self._password)
+                    print(f"  [{result.status}] {ss.session.title[:60]}")
+
+                    if result.status == "not_open" and watch and retries < self._max_retries:
+                        print(f"    → not open yet, retry {retries + 1}/{self._max_retries} in {self._interval}s")
                         await asyncio.sleep(self._interval)
                         retries += 1
                         continue
-                    results.append(result)
-                    registered = result.status in ("registered", "already_registered")
-                    break
 
-                # Try backup if primary failed
-                if not registered:
-                    slot = ss.start.isoformat()[:16]
-                    backup_ss = backups.get(slot)
-                    if backup_ss:
-                        print(f"  [primary failed] Trying backup: {backup_ss.session.title[:55]}")
-                        backup_result = await _try_register_session(
-                            page, backup_ss.session, self._email, self._password
-                        )
-                        print(f"  [{backup_result.status}] {backup_ss.session.title[:60]}")
-                        results.append(backup_result)
+                    results.append(result)
+                    # On permanent failure (including not_open after max retries), try backup
+                    if result.status not in _SUCCESS:
+                        slot = ss.start.isoformat()[:16]
+                        backup_ss = backups.get(slot)
+                        if backup_ss:
+                            print(f"  → primary {result.status} — trying backup: {backup_ss.session.title[:55]}")
+                            backup_result = await _try_register_session(
+                                page, backup_ss.session, self._email, self._password
+                            )
+                            print(f"  [backup·{backup_result.status}] {backup_ss.session.title[:60]}")
+                            results.append(backup_result)
+                    break
 
             await context.close()
 
         return results
 
     async def watch_and_register(self, schedule: list[ScheduledSession]) -> list[RegistrationResult]:
-        """Continuously poll until all sessions open, then register. Blocks until done."""
-        sessions_todo = sorted(
-            [ss.session for ss in schedule if ss.session.registration_url],
-            key=lambda s: s.score,
+        """Poll indefinitely until every primary is registered (or permanently fails).
+
+        - not_open  → keep retrying on next poll cycle
+        - full/error → try backup immediately; stop retrying primary
+        - registered/already_registered → slot done, skip backup
+        """
+        primaries = sorted(
+            [ss for ss in schedule if ss.session.registration_url and not ss.backup],
+            key=lambda ss: ss.session.score,
             reverse=True,
         )[: self._max_sessions]
+        backups = _backup_map(schedule)
 
         results: dict[str, RegistrationResult] = {}
-        pending = list(sessions_todo)
+        # pending holds ScheduledSessions still waiting to open
+        pending: list[ScheduledSession] = list(primaries)
 
         async with async_playwright() as pw:
             context, page = await _launch_context(pw, self._headless, self._email, self._password)
 
             while pending:
-                still_pending = []
-                for session in pending:
-                    result = await _try_register_session(page, session, self._email, self._password)
-                    print(f"  [{result.status}] {session.title[:60]}")
+                still_pending: list[ScheduledSession] = []
+
+                for ss in pending:
+                    result = await _try_register_session(page, ss.session, self._email, self._password)
+                    print(f"  [{result.status}] {ss.session.title[:60]}")
+
                     if result.status == "not_open":
-                        still_pending.append(session)
-                    else:
-                        results[session.event_id] = result
+                        still_pending.append(ss)   # retry next cycle
+                        continue
+
+                    results[ss.session.event_id] = result
+
+                    if result.status in _PERMANENT_FAIL:
+                        slot = ss.start.isoformat()[:16]
+                        backup_ss = backups.get(slot)
+                        if backup_ss:
+                            print(f"  → primary {result.status} — trying backup: {backup_ss.session.title[:55]}")
+                            backup_result = await _try_register_session(
+                                page, backup_ss.session, self._email, self._password
+                            )
+                            print(f"  [backup·{backup_result.status}] {backup_ss.session.title[:60]}")
+                            results[backup_ss.session.event_id] = backup_result
+                            if backup_result.status == "not_open":
+                                still_pending.append(backup_ss)  # backup also not open yet
 
                 if still_pending:
-                    print(f"[registrar] {len(still_pending)} sessions not yet open. Sleeping {self._interval}s...")
+                    print(f"[registrar] {len(still_pending)} session(s) not yet open — sleeping {self._interval}s...")
                     await asyncio.sleep(self._interval)
 
                 pending = still_pending
