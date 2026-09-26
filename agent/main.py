@@ -213,6 +213,7 @@ def _sessions_to_dict(schedule: list[ScheduledSession]) -> list[dict]:
             "learning_level": s.learning_level,
             "event_type": s.event_type,
             "score": s.score,
+            "partner_name": s.partner_name,
             "registration_url": s.registration_url,
             "learn_more_url": s.learn_more_url,
             "scheduled_start": ss.start.isoformat(),

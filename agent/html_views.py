@@ -582,8 +582,32 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
             )
             notes = s.get("notes", "")
 
+            # Embed session data for the details modal
+            _card_data = json.dumps({
+                "event_id": eid,
+                "title": s.get("title", ""),
+                "description": desc,
+                "start_date": s.get("start_date", ""),
+                "start_time": s.get("start_time", ""),
+                "scheduled_start": ss or "",
+                "scheduled_end": se or "",
+                "location": s.get("location", ""),
+                "learning_level": s.get("learning_level", ""),
+                "event_type": s.get("event_type", ""),
+                "partner_name": s.get("partner_name", ""),
+                "score": s.get("score", 0),
+                "registration_url": s.get("registration_url", ""),
+                "learn_more_url": s.get("learn_more_url", ""),
+            }, ensure_ascii=False).replace("'", "&#39;")
+            details_btn = (
+                f'<button onclick="openDetails(\'{eid}\')" title="Full session details" '
+                f'style="font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer;'
+                f'background:rgba(100,116,139,.12);border:1px solid rgba(100,116,139,.25);'
+                f'color:var(--text-2)">⋮ Details</button>'
+            )
+
             items_html.append(f"""
-<div style="display:flex;gap:0;margin:4px 0;align-items:flex-start">
+<div style="display:flex;gap:0;margin:4px 0;align-items:flex-start" data-session='{_card_data}' id="card-{eid}">
   <div style="width:56px;text-align:right;padding-right:12px;color:var(--text-3);font-size:12px;padding-top:13px;flex-shrink:0;font-variant-numeric:tabular-nums">
     {start_str}
   </div>
@@ -595,7 +619,7 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
       <div style="font-size:13px;font-weight:600;line-height:1.4;flex:1">{star}{title}{reg_link}</div>
       <div style="font-size:11px;color:var(--text-3);white-space:nowrap;padding-top:1px;flex-shrink:0;display:flex;align-items:center;gap:4px">
-        <span>{start_str}–{end_str}</span>{interactive_controls}
+        <span>{start_str}–{end_str}</span>{details_btn}{interactive_controls}
       </div>
     </div>
     <div class="flex" style="margin-top:6px;gap:6px">
@@ -674,6 +698,86 @@ function showDay(id) {{
   const tab = document.getElementById('tab-'+id);
   tab.classList.add('active'); tab.setAttribute('aria-selected','true');
 }}
+</script>"""
+
+    # ── Details modal (always present — works in both static and serve mode) ──
+    body += """
+<div id="dm-overlay" onclick="if(event.target===this)closeDetails()"
+  style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;align-items:center;justify-content:center">
+  <div id="dm-panel"
+    style="position:relative;width:min(620px,92vw);max-height:82vh;overflow-y:auto;
+           background:var(--bg);border:1px solid var(--border);border-radius:var(--r-lg);
+           padding:28px 28px 24px;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+           box-shadow:0 24px 64px rgba(0,0,0,.45)">
+    <button onclick="closeDetails()"
+      style="position:absolute;top:16px;right:16px;background:none;border:none;
+             font-size:18px;cursor:pointer;color:var(--text-3);line-height:1">✕</button>
+    <div id="dm-badges" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px"></div>
+    <div id="dm-title" style="font-size:18px;font-weight:700;line-height:1.35;margin-bottom:16px"></div>
+    <div id="dm-meta" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;font-size:12px;color:var(--text-3)"></div>
+    <div id="dm-desc" style="font-size:13px;line-height:1.7;color:var(--text-2);white-space:pre-wrap"></div>
+    <div id="dm-partner" style="margin-top:14px;font-size:12px;color:var(--text-3)"></div>
+    <div id="dm-links" style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap"></div>
+  </div>
+</div>
+<script>
+const _DM_SESSIONS = {};
+document.querySelectorAll('[data-session]').forEach(el => {
+  try { const d = JSON.parse(el.dataset.session.replace(/&#39;/g,"'")); _DM_SESSIONS[d.event_id] = d; } catch(e) {}
+});
+
+function openDetails(eventId) {
+  const d = _DM_SESSIONS[eventId];
+  if (!d) return;
+  _populateModal(d);
+  document.getElementById('dm-overlay').style.display = 'flex';
+  document.addEventListener('keydown', _dmKey);
+  // In serve mode, upgrade with full description from server
+  if (typeof _API !== 'undefined') {
+    fetch(_API + '/api/event/' + encodeURIComponent(eventId))
+      .then(r => r.ok ? r.json() : null)
+      .then(full => { if (full) _populateModal(full); })
+      .catch(() => {});
+  }
+}
+
+function _populateModal(d) {
+  const lvlColors = {Expert:'#f43f5e',Advanced:'#f59e0b',Intermediate:'#60a5fa',Foundational:'#94a3b8'};
+  const lvl = d.learning_level || '';
+  const lc = lvlColors[lvl] || '#888';
+  document.getElementById('dm-badges').innerHTML = [
+    lvl ? `<span style="font-size:11px;padding:2px 8px;border-radius:12px;border:1px solid ${lc}44;color:${lc}">${lvl}</span>` : '',
+    d.event_type ? `<span style="font-size:11px;padding:2px 8px;border-radius:12px;border:1px solid var(--border);color:var(--text-3)">${d.event_type}</span>` : '',
+    d.score ? `<span style="font-size:11px;padding:2px 8px;border-radius:12px;background:rgba(99,102,241,.12);border:1px solid rgba(99,102,241,.3);color:var(--accent)">${Math.round(d.score*100)}% match</span>` : '',
+  ].join('');
+  document.getElementById('dm-title').textContent = d.title || '';
+  const loc = (d.location || '').split('|')[0].trim();
+  const start = d.scheduled_start ? d.scheduled_start.slice(0,16).replace('T',' ') : (d.start_date ? d.start_date + (d.start_time ? ' ' + d.start_time : '') : '');
+  document.getElementById('dm-meta').innerHTML = [
+    start ? `<span>📅 ${start}</span>` : '',
+    loc  ? `<span>📍 ${loc}</span>` : '',
+    d.time_zone ? `<span>${d.time_zone}</span>` : '',
+  ].filter(Boolean).join('<span style="opacity:.3">·</span>');
+  document.getElementById('dm-desc').textContent = d.description || '';
+  document.getElementById('dm-partner').innerHTML = d.partner_name
+    ? `<span style="border:1px solid var(--border);border-radius:4px;padding:2px 8px">Partner: ${d.partner_name}</span>` : '';
+  const links = [];
+  if (d.registration_url) links.push(`<a href="${d.registration_url}" target="_blank"
+    style="display:inline-flex;align-items:center;gap:4px;padding:7px 14px;border-radius:var(--r-sm);
+    background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.4);color:var(--accent);
+    font-size:12px;font-weight:600;text-decoration:none">↗ Register</a>`);
+  if (d.learn_more_url) links.push(`<a href="${d.learn_more_url}" target="_blank"
+    style="display:inline-flex;align-items:center;gap:4px;padding:7px 14px;border-radius:var(--r-sm);
+    background:var(--surface);border:1px solid var(--border);color:var(--text-2);
+    font-size:12px;font-weight:600;text-decoration:none">Learn more</a>`);
+  document.getElementById('dm-links').innerHTML = links.join('');
+}
+
+function closeDetails() {
+  document.getElementById('dm-overlay').style.display = 'none';
+  document.removeEventListener('keydown', _dmKey);
+}
+function _dmKey(e) { if (e.key === 'Escape') closeDetails(); }
 </script>"""
 
     if interactive_port:
