@@ -179,8 +179,9 @@ registration:
 # Falls back to keyword scoring silently if Bedrock is unavailable or errors.
 llm:
   enabled: false
-  model_id: "anthropic.claude-3-5-haiku-20241022-v1:0"  # cheapest Claude on Bedrock
-  region: "us-east-1"
+  model_id: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"  # Haiku 4.5 via EU cross-region inference
+  region: "eu-west-1"
+  aws_profile: "your-aws-sso-profile"        # SSO profile (leave blank for default creds)
 
 catalog_api:
   # Rainfocus widget IDs embedded in the re:Invent event catalog page source.

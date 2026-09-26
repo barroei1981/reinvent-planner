@@ -62,15 +62,21 @@ class LLMScorer:
     def __init__(self, llm_config: dict, preferences: dict) -> None:
         self._fallback = Scorer(preferences)
         self._preferences = preferences
-        self._model_id: str = llm_config.get("model_id", "anthropic.claude-3-5-haiku-20241022-v1:0")
-        self._region: str = llm_config.get("region", "us-east-1")
+        self._model_id: str = llm_config.get("model_id", "eu.anthropic.claude-haiku-4-5-20251001-v1:0")
+        self._region: str = llm_config.get("region", "eu-west-1")
+        self._profile: str = llm_config.get("aws_profile", "")
         self._context = _user_context(preferences)
         self._client = None  # lazy — avoid boto3 import cost when not used
 
     def _get_client(self):
         if self._client is None:
             import boto3
-            self._client = boto3.client("bedrock-runtime", region_name=self._region)
+            session = (
+                boto3.Session(profile_name=self._profile)
+                if self._profile
+                else boto3.Session()
+            )
+            self._client = session.client("bedrock-runtime", region_name=self._region)
         return self._client
 
     def _invoke_batch(self, sessions: list[Session]) -> dict[str, float]:
