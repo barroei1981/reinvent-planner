@@ -18,9 +18,13 @@ dependencies = [
 
 [project.optional-dependencies]
 bedrock = ["boto3>=1.34"]
+mcp = [
+    "mcp[cli]>=1.0",
+]
 
 [project.scripts]
 awsevents = "agent.main:cli"
+awsevents-mcp = "agent.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
