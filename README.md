@@ -8,6 +8,22 @@ Use it as a **CLI tool**, connect it to **Claude Desktop / Cursor / VS Code** vi
 
 ---
 
+## Screenshots
+
+**Schedule view** — day tabs, venue colour bars, backup badges, travel warnings, light/dark mode
+
+![Schedule view dark](docs/screenshots/schedule_dark.png)
+
+**Session detail** — click ⋮ Details on any card for the full record: description, partner, level, Register + Learn More links
+
+![Session detail modal](docs/screenshots/detail_modal.png)
+
+**Live edit** (`awsevents serve`) — ✎ Edit opens scored alternatives inline; → Swap or ⚑ Backup writes to `schedule.json` instantly
+
+![Live edit panel](docs/screenshots/edit_panel.png)
+
+---
+
 ## Features
 
 | | |
@@ -21,7 +37,7 @@ Use it as a **CLI tool**, connect it to **Claude Desktop / Cursor / VS Code** vi
 | **ICS export** | One command exports your schedule to a `.ics` file — import into Google Calendar, Apple Calendar, or Outlook. |
 | **Auto-register** | Playwright logs into registration.awsevents.com and clicks Reserve Seat for every session in your schedule. `watch` mode polls until seats open. |
 | **Wizard** | `awsevents setup` walks you through every step interactively with console + HTML views at each stage. |
-| **Live edit UI** | `awsevents serve` opens the schedule in a browser — swap sessions, add backups, and remove sessions directly from the cards. |
+| **Live edit UI** | `awsevents serve` opens the schedule in a browser — swap sessions, add backups, remove sessions, and drill into full details directly from every card. |
 | **MCP server** | Expose all features as MCP tools — locally via stdio or remotely over HTTP for Claude.ai, ChatGPT, Gemini, and Perplexity. |
 
 ---
