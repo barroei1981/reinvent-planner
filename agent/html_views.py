@@ -520,6 +520,9 @@ def html_schedule(schedule: list[dict]) -> str:
                 if reg_url else ""
             )
 
+            is_backup = s.get("backup", False)
+            backup_note = s.get("backup_note", "")
+
             star = '<span style="color:var(--star)">★</span> ' if is_wishlist else ""
             if is_keynote:
                 keynote_header = (
@@ -529,6 +532,14 @@ def html_schedule(schedule: list[dict]) -> str:
                 )
                 card_border = "border-color:rgba(167,139,250,0.35)"
                 bar_color = "var(--keynote)"
+            elif is_backup:
+                keynote_header = (
+                    f'<div style="margin-bottom:6px">'
+                    f'<span class="badge" style="background:rgba(251,191,36,0.10);color:#f59e0b;border-color:rgba(251,191,36,0.35)">'
+                    f'⚑ BACKUP · Register if primary is full</span></div>'
+                )
+                card_border = "border-style:dashed;border-color:rgba(251,191,36,0.35);opacity:0.85"
+                bar_color = "#f59e0b"
             else:
                 keynote_header = ""
                 card_border = ""
@@ -566,6 +577,7 @@ def html_schedule(schedule: list[dict]) -> str:
     </div>
     {f'<div style="margin-top:6px;font-size:12px;color:var(--text-3);line-height:1.6">{desc_snippet}</div>' if desc_snippet else ""}
     {f'<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--text-3)">{notes[:100]}</div>' if notes else ""}
+    {f'<div style="margin-top:6px;font-size:11px;color:#f59e0b;font-style:italic">{backup_note}</div>' if is_backup and backup_note else ""}
   </div>
 </div>""")
 
