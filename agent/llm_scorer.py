@@ -70,12 +70,10 @@ class LLMScorer:
 
     def _get_client(self):
         if self._client is None:
+            import os
             import boto3
-            session = (
-                boto3.Session(profile_name=self._profile)
-                if self._profile
-                else boto3.Session()
-            )
+            profile = self._profile or os.getenv("AWS_PROFILE", "")
+            session = boto3.Session(profile_name=profile) if profile else boto3.Session()
             self._client = session.client("bedrock-runtime", region_name=self._region)
         return self._client
 
