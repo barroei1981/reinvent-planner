@@ -26,6 +26,8 @@ class ScheduledSession:
     day: str           # YYYY-MM-DD
     start: datetime
     end: datetime
+    backup: bool = False        # fallback if primary slot registration fails
+    backup_note: str = ""
 
 
 def _resolve_cluster(location: Optional[str], venue_clusters: list[dict]) -> Optional[int]:
