@@ -32,7 +32,8 @@ uv run awsevents-mcp           # start MCP server (stdio, for Claude Desktop / C
 ```
 
 ## MCP Server
-Add to `claude_desktop_config.json` (or equivalent host config):
+
+**Local** (Claude Desktop, Cursor, VS Code, Continue):
 ```json
 {
   "mcpServers": {
@@ -44,6 +45,18 @@ Add to `claude_desktop_config.json` (or equivalent host config):
   }
 }
 ```
+
+**Remote** (Claude.ai, ChatGPT, Gemini, Perplexity — any HTTP MCP host):
+```bash
+# Start the HTTP server (add AWSEVENTS_API_KEY for auth)
+AWSEVENTS_API_KEY=your-secret uv run awsevents-mcp --transport http --host 0.0.0.0 --port 8000
+
+# MCP endpoint:  http://<host>:8000/mcp
+# Claude.ai:     Settings → Integrations → Add MCP Server → paste the URL
+# ChatGPT:       Custom GPT → Add Action → enter URL + auth header
+# Gemini:        Extensions → Custom MCP → enter URL
+```
+
 Scoring is keyword-based by default. Set `llm.enabled: true` in config.yaml to
 opt into Bedrock re-ranking (requires AWS credentials; falls back silently).
 
