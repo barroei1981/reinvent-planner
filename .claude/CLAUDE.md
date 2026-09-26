@@ -20,6 +20,7 @@ and auto-registers for sessions via Playwright once seats open.
 - `agent/scheduler.py`  — greedy daily schedule optimizer with venue-hop penalty
 - `agent/registrar.py`  — Playwright login + seat auto-registration
 - `agent/main.py`       — CLI: plan / list / register / watch
+- `agent/mcp_server.py` — MCP server (4 tools: list_sessions, plan_schedule, get_schedule, get_config)
 
 ## Usage
 ```
@@ -27,7 +28,24 @@ uv run awsevents plan          # fetch → score → schedule → save schedule.
 uv run awsevents list          # show all matching sessions with scores
 uv run awsevents register      # register from schedule.json immediately
 uv run awsevents watch         # poll until sessions open, then auto-register
+uv run awsevents-mcp           # start MCP server (stdio, for Claude Desktop / Cursor / etc.)
 ```
+
+## MCP Server
+Add to `claude_desktop_config.json` (or equivalent host config):
+```json
+{
+  "mcpServers": {
+    "awsevents": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/awsevents_agent", "awsevents-mcp"],
+      "env": { "AWSEVENTS_CONFIG": "/path/to/awsevents_agent/config.yaml" }
+    }
+  }
+}
+```
+Scoring is keyword-based by default. Set `llm.enabled: true` in config.yaml to
+opt into Bedrock re-ranking (requires AWS credentials; falls back silently).
 
 ## LCH Harness
 This project uses the LCH Harness. Key paths:
