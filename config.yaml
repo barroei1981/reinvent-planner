@@ -178,10 +178,10 @@ registration:
 # Requires: uv add boto3  +  AWS credentials with bedrock:InvokeModel permission.
 # Falls back to keyword scoring silently if Bedrock is unavailable or errors.
 llm:
-  enabled: false
+  enabled: true
   model_id: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"  # Haiku 4.5 via EU cross-region inference
   region: "eu-west-1"
-  aws_profile: "your-aws-sso-profile"        # SSO profile (leave blank for default creds)
+  aws_profile: ""    # leave blank — reads AWS_PROFILE from .env
 
 catalog_api:
   # Rainfocus widget IDs embedded in the re:Invent event catalog page source.

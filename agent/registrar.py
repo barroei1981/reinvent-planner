@@ -228,22 +228,31 @@ class Registrar:
     ) -> list[RegistrationResult]:
         """Register for sessions in the given schedule.
 
+        Primary sessions are registered first. If a primary fails (full/error),
+        the backup session for that time slot is tried automatically.
         If watch=True, retries not-yet-open sessions until they open.
-        Returns list of RegistrationResult for each attempt.
         """
-        sessions = sorted(
-            [ss.session for ss in schedule if ss.session.registration_url],
-            key=lambda s: s.score,
+        primaries = sorted(
+            [ss for ss in schedule if ss.session.registration_url and not ss.backup],
+            key=lambda ss: ss.session.score,
             reverse=True,
         )[: self._max_sessions]
+
+        # Map slot → backup session for fallback
+        backups: dict[str, ScheduledSession] = {}
+        for ss in schedule:
+            if ss.backup and ss.session.registration_url:
+                backups[ss.start.isoformat()[:16]] = ss
 
         results: list[RegistrationResult] = []
 
         async with async_playwright() as pw:
             context, page = await _launch_context(pw, self._headless, self._email, self._password)
 
-            for session in sessions:
+            for ss in primaries:
+                session = ss.session
                 retries = 0
+                registered = False
                 while retries <= self._max_retries:
                     result = await _try_register_session(page, session, self._email, self._password)
                     print(f"  [{result.status}] {session.title[:60]}")
@@ -253,7 +262,20 @@ class Registrar:
                         retries += 1
                         continue
                     results.append(result)
+                    registered = result.status in ("registered", "already_registered")
                     break
+
+                # Try backup if primary failed
+                if not registered:
+                    slot = ss.start.isoformat()[:16]
+                    backup_ss = backups.get(slot)
+                    if backup_ss:
+                        print(f"  [primary failed] Trying backup: {backup_ss.session.title[:55]}")
+                        backup_result = await _try_register_session(
+                            page, backup_ss.session, self._email, self._password
+                        )
+                        print(f"  [{backup_result.status}] {backup_ss.session.title[:60]}")
+                        results.append(backup_result)
 
             await context.close()
 

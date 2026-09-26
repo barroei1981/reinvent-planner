@@ -62,7 +62,7 @@ def _sessions_to_dict(schedule: list[ScheduledSession]) -> list[dict]:
     out = []
     for ss in schedule:
         s = ss.session
-        out.append({
+        entry = {
             "event_id": s.event_id,
             "title": s.title,
             "description": s.description[:300],
@@ -78,7 +78,12 @@ def _sessions_to_dict(schedule: list[ScheduledSession]) -> list[dict]:
             "learn_more_url": s.learn_more_url,
             "scheduled_start": ss.start.isoformat(),
             "scheduled_end": ss.end.isoformat(),
-        })
+        }
+        if ss.backup:
+            entry["backup"] = True
+        if ss.backup_note:
+            entry["backup_note"] = ss.backup_note
+        out.append(entry)
     return out
 
 
@@ -115,6 +120,8 @@ def _load_schedule(config: dict) -> list[ScheduledSession]:
             day=item["start_date"],
             start=datetime.fromisoformat(item["scheduled_start"]),
             end=datetime.fromisoformat(item["scheduled_end"]),
+            backup=bool(item.get("backup", False)),
+            backup_note=item.get("backup_note", ""),
         )
         sessions.append(ss)
     return sessions
@@ -259,8 +266,48 @@ def plan(min_score: float, day: Optional[str], all_events: bool) -> None:
 
         _print_schedule(schedule)
 
+        new_sessions = _sessions_to_dict(schedule)
+
+        # ── Approval gate: require user confirmation before overwriting ───────
+        if _SCHEDULE_PATH.exists():
+            with open(_SCHEDULE_PATH) as f:
+                existing = json.load(f)
+            existing_ids = {s["event_id"] for s in existing if not s.get("backup")}
+            new_ids     = {s["event_id"] for s in new_sessions}
+            added   = new_ids - existing_ids
+            removed = existing_ids - new_ids
+
+            if added or removed:
+                console.print("\n[bold yellow]⚠  Schedule changes detected[/bold yellow]")
+                if removed:
+                    console.print(f"  [red]Removed ({len(removed)}):[/red]")
+                    for s in existing:
+                        if s["event_id"] in removed:
+                            console.print(f"    ✕  {s['start_date']} {(s.get('start_time') or '')[:5]}  {s['title'][:65]}")
+                if added:
+                    console.print(f"  [green]Added ({len(added)}):[/green]")
+                    for s in new_sessions:
+                        if s["event_id"] in added:
+                            console.print(f"    +  {s['start_date']} {(s.get('start_time') or '')[:5]}  {s['title'][:65]}")
+                if not click.confirm("\n  Apply these changes to schedule.json?", default=False):
+                    console.print("[dim]Schedule not saved — existing schedule unchanged.[/dim]")
+                    return
+            else:
+                console.print("\n[dim]No session changes vs existing schedule.[/dim]")
+
+        # Preserve backup sessions from current schedule (never auto-removed)
+        if _SCHEDULE_PATH.exists():
+            with open(_SCHEDULE_PATH) as f:
+                existing = json.load(f)
+            backups = [s for s in existing if s.get("backup")]
+            new_ids = {s["event_id"] for s in new_sessions}
+            for b in backups:
+                if b["event_id"] not in new_ids:
+                    new_sessions.append(b)
+            new_sessions.sort(key=lambda s: (s.get("start_date",""), s.get("scheduled_start","")))
+
         with open(_SCHEDULE_PATH, "w") as f:
-            json.dump(_sessions_to_dict(schedule), f, indent=2)
+            json.dump(new_sessions, f, indent=2)
         console.print(f"\n[dim]Schedule saved to {_SCHEDULE_PATH}[/dim]")
 
     asyncio.run(_run())
