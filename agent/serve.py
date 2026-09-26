@@ -229,6 +229,30 @@ async def post_swap(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+async def get_event_detail(request: Request) -> JSONResponse:
+    """Full record for one session — complete description, all fields."""
+    event_id = request.path_params["event_id"]
+    session = next((s for s in _st.scored if s.event_id == event_id), None)
+    if not session:
+        return JSONResponse({"error": f"event {event_id!r} not found"}, status_code=404)
+    return JSONResponse({
+        "event_id": session.event_id,
+        "title": session.title,
+        "description": session.description or "",
+        "start_date": str(session.start_date) if session.start_date else None,
+        "start_time": session.start_time,
+        "time_zone": session.time_zone,
+        "location": session.location,
+        "location_mode": session.location_mode,
+        "learning_level": session.learning_level,
+        "event_type": session.event_type,
+        "partner_name": session.partner_name,
+        "score": round(session.score, 4),
+        "registration_url": session.registration_url,
+        "learn_more_url": session.learn_more_url,
+    })
+
+
 async def post_remove(request: Request) -> JSONResponse:
     body = await request.json()
     event_id = body.get("event_id", "")
@@ -247,6 +271,7 @@ def create_app(port: int = 8080) -> Starlette:
             Route("/", get_index),
             Route("/api/schedule", get_schedule_api),
             Route("/api/alternatives", get_alternatives),
+            Route("/api/event/{event_id}", get_event_detail),
             Route("/api/swap", post_swap, methods=["POST"]),
             Route("/api/remove", post_remove, methods=["POST"]),
         ],
