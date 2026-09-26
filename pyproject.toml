@@ -13,6 +13,7 @@ dependencies = [
     "rich>=13.0",
     "aws-events-mcp>=0.4.2",
     "browser-cookie3>=0.20.1",
+    "boto3>=1.43.103",
 ]
 
 [project.optional-dependencies]

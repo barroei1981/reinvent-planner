@@ -51,6 +51,145 @@ _CONFIG_PATH = Path("config.yaml")
 _SCHEDULE_PATH = Path("schedule.json")
 
 
+_DAY_NAMES_PLAN = {
+    "2026-11-30": "Mon Nov 30", "2026-12-01": "Tue Dec 1",
+    "2026-12-02": "Wed Dec 2",  "2026-12-03": "Thu Dec 3",
+    "2026-12-04": "Fri Dec 4",  "2026-12-05": "Sat Dec 5",
+}
+
+
+def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Optional[list[dict]]:
+    """Per-slot approval gate comparing existing schedule to a new plan.
+
+    For each changed slot the user chooses:
+      1 — keep current primary + add Bedrock pick as backup
+      2 — switch to Bedrock primary + keep current as backup
+      3 — keep only current  (ignore Bedrock)
+      4 — take only Bedrock  (drop current)
+
+    New slots (Bedrock added) and dropped slots (Bedrock removed) get a
+    simple yes/no prompt.
+
+    Returns the final sessions list to write, or None if the user cancels.
+    Existing backup sessions are always preserved unless explicitly dropped.
+    """
+    existing_backups = [s for s in existing if s.get("backup")]
+    existing_primaries = {
+        s["scheduled_start"][:16]: s
+        for s in existing
+        if not s.get("backup") and s.get("scheduled_start")
+    }
+    new_by_slot = {
+        s["scheduled_start"][:16]: s
+        for s in new_sessions
+        if s.get("scheduled_start")
+    }
+
+    all_slots = sorted(set(existing_primaries) | set(new_by_slot))
+    unchanged, replacements, additions, drops = [], [], [], []
+
+    for slot in all_slots:
+        e = existing_primaries.get(slot)
+        n = new_by_slot.get(slot)
+        if e and n:
+            if e["event_id"] == n["event_id"]:
+                unchanged.append((slot, n))   # take new version (score may differ)
+            else:
+                replacements.append((slot, e, n))
+        elif n:
+            additions.append((slot, n))
+        else:
+            drops.append((slot, e))
+
+    if not replacements and not additions and not drops:
+        console.print("\n[dim]No session changes vs existing schedule.[/dim]")
+        # Re-save with updated scores; preserve existing backups
+        final = [s for _, s in unchanged]
+        for b in existing_backups:
+            if b["event_id"] not in {s["event_id"] for s in final}:
+                final.append(b)
+        final.sort(key=lambda s: (s.get("start_date", ""), s.get("scheduled_start", "")))
+        return final
+
+    final: list[dict] = [s for _, s in unchanged]
+
+    def _venue(s: dict) -> str:
+        return (s.get("location") or "—").split("|")[0].strip()[:22]
+
+    # ── Replacements: per-slot decision ───────────────────────────────────────
+    if replacements:
+        console.print(f"\n[bold yellow]⚡  {len(replacements)} slot(s) — Bedrock recommends a different session[/bold yellow]")
+
+    for slot, curr, new in replacements:
+        day, time = slot[:10], slot[11:16]
+        console.print(
+            f"\n  [bold]{_DAY_NAMES_PLAN.get(day, day)}  {time}[/bold]"
+        )
+        console.print(
+            f"  [dim]Current :[/dim] [cyan]{curr['title'][:65]}[/cyan]\n"
+            f"           [dim]score {curr.get('score', 0):.2f}  {_venue(curr)}[/dim]"
+        )
+        console.print(
+            f"  [dim]Bedrock :[/dim] [green]{new['title'][:65]}[/green]\n"
+            f"           [dim]score {new.get('score', 0):.2f}  {_venue(new)}[/dim]"
+        )
+        console.print(
+            "  [dim](1)[/dim] Keep current as primary  +  add Bedrock as backup\n"
+            "  [dim](2)[/dim] Switch to Bedrock primary  +  keep current as backup\n"
+            "  [dim](3)[/dim] Keep only current  (ignore Bedrock)\n"
+            "  [dim](4)[/dim] Take only Bedrock  (drop current)"
+        )
+        choice = click.prompt("  Choice", default="1").strip()
+
+        if choice == "2":
+            final.append(new)
+            final.append({**curr, "backup": True,
+                          "backup_note": f"Previous primary, replaced by Bedrock recommendation"})
+        elif choice == "3":
+            final.append(curr)
+        elif choice == "4":
+            final.append(new)
+        else:  # 1 (default)
+            final.append(curr)
+            final.append({**new, "backup": True,
+                          "backup_note": f"Bedrock alternative for: {curr['title'][:55]}"})
+
+    # ── Additions: Bedrock added a new slot ───────────────────────────────────
+    if additions:
+        console.print(f"\n[bold green]+  {len(additions)} new slot(s) Bedrock recommends[/bold green]")
+
+    for slot, new in additions:
+        day, time = slot[:10], slot[11:16]
+        console.print(
+            f"\n  [bold]{_DAY_NAMES_PLAN.get(day, day)}  {time}[/bold]  "
+            f"[green]{new['title'][:65]}[/green]  [dim](score {new.get('score', 0):.2f})[/dim]"
+        )
+        if click.confirm("  Add to schedule?", default=True):
+            final.append(new)
+
+    # ── Drops: Bedrock removed a slot ─────────────────────────────────────────
+    if drops:
+        console.print(f"\n[bold red]✕  {len(drops)} slot(s) Bedrock dropped[/bold red]")
+
+    for slot, curr in drops:
+        day, time = slot[:10], slot[11:16]
+        console.print(
+            f"\n  [bold]{_DAY_NAMES_PLAN.get(day, day)}  {time}[/bold]  "
+            f"[cyan]{curr['title'][:65]}[/cyan]  [dim](score {curr.get('score', 0):.2f})[/dim]"
+        )
+        if click.confirm("  Keep in schedule?", default=True):
+            final.append(curr)
+
+    # ── Always preserve existing backups not already in final ─────────────────
+    final_ids = {s["event_id"] for s in final}
+    for b in existing_backups:
+        if b["event_id"] not in final_ids:
+            final.append(b)
+
+    final.sort(key=lambda s: (s.get("start_date", ""), s.get("scheduled_start", "")))
+    return final
+
+
 def _load_config() -> dict:
     if not _CONFIG_PATH.exists():
         raise click.ClickException(f"config.yaml not found — copy from config.yaml.example and fill in your preferences")
@@ -268,43 +407,16 @@ def plan(min_score: float, day: Optional[str], all_events: bool) -> None:
 
         new_sessions = _sessions_to_dict(schedule)
 
-        # ── Approval gate: require user confirmation before overwriting ───────
+        # ── Approval gate: per-slot interactive review ─────────────────────────
         if _SCHEDULE_PATH.exists():
             with open(_SCHEDULE_PATH) as f:
                 existing = json.load(f)
-            existing_ids = {s["event_id"] for s in existing if not s.get("backup")}
-            new_ids     = {s["event_id"] for s in new_sessions}
-            added   = new_ids - existing_ids
-            removed = existing_ids - new_ids
-
-            if added or removed:
-                console.print("\n[bold yellow]⚠  Schedule changes detected[/bold yellow]")
-                if removed:
-                    console.print(f"  [red]Removed ({len(removed)}):[/red]")
-                    for s in existing:
-                        if s["event_id"] in removed:
-                            console.print(f"    ✕  {s['start_date']} {(s.get('start_time') or '')[:5]}  {s['title'][:65]}")
-                if added:
-                    console.print(f"  [green]Added ({len(added)}):[/green]")
-                    for s in new_sessions:
-                        if s["event_id"] in added:
-                            console.print(f"    +  {s['start_date']} {(s.get('start_time') or '')[:5]}  {s['title'][:65]}")
-                if not click.confirm("\n  Apply these changes to schedule.json?", default=False):
-                    console.print("[dim]Schedule not saved — existing schedule unchanged.[/dim]")
-                    return
-            else:
-                console.print("\n[dim]No session changes vs existing schedule.[/dim]")
-
-        # Preserve backup sessions from current schedule (never auto-removed)
-        if _SCHEDULE_PATH.exists():
-            with open(_SCHEDULE_PATH) as f:
-                existing = json.load(f)
-            backups = [s for s in existing if s.get("backup")]
-            new_ids = {s["event_id"] for s in new_sessions}
-            for b in backups:
-                if b["event_id"] not in new_ids:
-                    new_sessions.append(b)
-            new_sessions.sort(key=lambda s: (s.get("start_date",""), s.get("scheduled_start","")))
+            result = _run_approval_gate(existing, new_sessions)
+            if result is None:
+                console.print("[dim]Schedule not saved — existing schedule unchanged.[/dim]")
+                return
+            new_sessions = result
+        # No existing schedule — first run, save directly
 
         with open(_SCHEDULE_PATH, "w") as f:
             json.dump(new_sessions, f, indent=2)
