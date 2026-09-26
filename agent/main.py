@@ -28,6 +28,22 @@ from agent.catalog import fetch_sessions, Session
 from agent.scorer import Scorer
 from agent.scheduler import build_schedule, ScheduledSession
 
+
+def _make_scorer(config: dict):
+    """Return LLMScorer when llm.enabled=true and boto3 is available, else Scorer."""
+    prefs = config.get("preferences", {})
+    llm_cfg = config.get("llm", {})
+    if llm_cfg.get("enabled", False):
+        try:
+            import boto3  # noqa: F401
+            from agent.llm_scorer import LLMScorer
+            scorer = LLMScorer(llm_cfg, prefs)
+            console.print("[dim]LLM scoring enabled (Bedrock)[/dim]")
+            return scorer
+        except ImportError:
+            console.print("[yellow]llm.enabled=true but boto3 is not installed — using keyword scorer[/yellow]")
+    return Scorer(prefs)
+
 load_dotenv()
 console = Console(width=160)
 
@@ -184,7 +200,7 @@ def plan(min_score: float, day: Optional[str], all_events: bool) -> None:
     async def _run() -> None:
         config = _load_config()
         ev_cfg = config.get("event", {})
-        scorer = Scorer(config.get("preferences", {}))
+        scorer = _make_scorer(config)
 
         # ── Source selection ──────────────────────────────────────────────
         # Prefer the scraped re:Invent catalog when available (sync-wishlist was run).
@@ -275,7 +291,7 @@ def list_sessions(min_score: float, top: int, all_events: bool) -> None:
             location_text=loc_text if not all_events else None,
             location_mode=loc_mode if not all_events else None,
         )
-        scorer = Scorer(config.get("preferences", {}))
+        scorer = _make_scorer(config)
         scored = scorer.score_all(sessions)
         filtered = [s for s in scored if s.score >= min_score][:top]
 
@@ -426,10 +442,9 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
         return
 
     from agent.wishlist import load_catalog
-    from agent.scorer import Scorer
 
     all_sessions = load_catalog()
-    scorer = Scorer(prefs)
+    scorer = _make_scorer(config)
     scored_all = scorer.score_reinvent_sessions(all_sessions)
 
     scheduled_ids = {s["event_id"] for s in schedule if s["event_id"] != target_session["event_id"]}
