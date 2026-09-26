@@ -446,7 +446,12 @@ def html_conflicts(conflicts: list[tuple[dict, dict]]) -> str:
 
 # ── Step 5: Schedule View ─────────────────────────────────────────────────────
 
-def html_schedule(schedule: list[dict]) -> str:
+def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> str:
+    """Render the schedule view.
+
+    When ``interactive_port`` is set the HTML is served from a local web server
+    and gains live edit controls: swap sessions, add backups, remove sessions.
+    """
     by_day: dict[str, list[dict]] = {}
     for s in schedule:
         by_day.setdefault(s.get("start_date", "unknown"), []).append(s)
@@ -521,7 +526,31 @@ def html_schedule(schedule: list[dict]) -> str:
             )
 
             is_backup = s.get("backup", False)
+            eid = s.get("event_id", "")
+            slot_key = (ss or "")[:16]  # YYYY-MM-DDTHH:MM
             backup_note = s.get("backup_note", "")
+
+            # Interactive controls (only when served from the local web server)
+            if interactive_port and not is_keynote:
+                _q = lambda v: v.replace("'", "\\'")
+                edit_btn = (
+                    f'<button id="eb-{eid}" onclick="toggleEdit(this,\'{_q(eid)}\',\'{slot_key}\')" '
+                    f'title="Find alternatives for this slot" '
+                    f'style="font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer;'
+                    f'background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);'
+                    f'color:var(--accent)">✎ Edit</button>'
+                )
+                remove_btn = (
+                    f'<button onclick="removeSession(\'{_q(eid)}\')" title="Remove from schedule" '
+                    f'style="font-size:11px;padding:3px 7px;border-radius:4px;cursor:pointer;'
+                    f'background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.25);'
+                    f'color:#f87171;margin-left:4px">✕</button>'
+                )
+                interactive_controls = f'<span style="display:inline-flex;align-items:center;margin-left:8px">{edit_btn}{remove_btn}</span>'
+                alt_panel = f'<div id="ap-{eid}" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px"></div>'
+            else:
+                interactive_controls = ""
+                alt_panel = ""
 
             star = '<span style="color:var(--star)">★</span> ' if is_wishlist else ""
             if is_keynote:
@@ -565,8 +594,8 @@ def html_schedule(schedule: list[dict]) -> str:
     {keynote_header}
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
       <div style="font-size:13px;font-weight:600;line-height:1.4;flex:1">{star}{title}{reg_link}</div>
-      <div style="font-size:11px;color:var(--text-3);white-space:nowrap;padding-top:1px;flex-shrink:0">
-        {start_str}–{end_str}
+      <div style="font-size:11px;color:var(--text-3);white-space:nowrap;padding-top:1px;flex-shrink:0;display:flex;align-items:center;gap:4px">
+        <span>{start_str}–{end_str}</span>{interactive_controls}
       </div>
     </div>
     <div class="flex" style="margin-top:6px;gap:6px">
@@ -578,6 +607,7 @@ def html_schedule(schedule: list[dict]) -> str:
     {f'<div style="margin-top:6px;font-size:12px;color:var(--text-3);line-height:1.6">{desc_snippet}</div>' if desc_snippet else ""}
     {f'<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--text-3)">{notes[:100]}</div>' if notes else ""}
     {f'<div style="margin-top:6px;font-size:11px;color:#f59e0b;font-style:italic">{backup_note}</div>' if is_backup and backup_note else ""}
+    {alt_panel}
   </div>
 </div>""")
 
@@ -646,7 +676,89 @@ function showDay(id) {{
 }}
 </script>"""
 
-    return _html_page("Step 5 — Schedule", body)
+    if interactive_port:
+        api = f"http://localhost:{interactive_port}"
+        body += f"""
+<script>
+const _API = '{api}';
+
+async function toggleEdit(btn, eventId, slot) {{
+  const panel = document.getElementById('ap-' + eventId);
+  if (!panel) return;
+  if (panel.style.display !== 'none') {{
+    panel.style.display = 'none';
+    btn.innerHTML = '✎ Edit';
+    return;
+  }}
+  btn.innerHTML = '⋯';
+  btn.disabled = true;
+  try {{
+    const res = await fetch(`${{_API}}/api/alternatives?slot=${{encodeURIComponent(slot)}}&exclude=${{encodeURIComponent(eventId)}}`);
+    const alts = await res.json();
+    panel.innerHTML = _renderAlts(alts, slot);
+    panel.style.display = 'block';
+    btn.innerHTML = '✕ Close';
+  }} catch(e) {{
+    panel.innerHTML = '<div style="padding:8px;color:#f87171">Could not load alternatives.</div>';
+    panel.style.display = 'block';
+    btn.innerHTML = '✎ Edit';
+  }}
+  btn.disabled = false;
+}}
+
+function _renderAlts(alts, slot) {{
+  if (!alts || !alts.length) return '<div style="padding:8px;color:var(--text-3)">No non-conflicting alternatives found.</div>';
+  const rows = alts.map(a => {{
+    const pct = Math.round((a.score || 0) * 100);
+    const lvl = a.learning_level || '—';
+    const loc = (a.location || '—').slice(0, 28);
+    const time = a.start_time || '?';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="width:36px;flex-shrink:0;text-align:center">
+        <div style="font-size:10px;font-weight:700;color:var(--accent)">${{pct}}%</div>
+        <div style="height:3px;background:var(--border);border-radius:2px;margin-top:2px">
+          <div style="height:100%;width:${{pct}}%;background:var(--accent);border-radius:2px"></div>
+        </div>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:600;line-height:1.35">${{a.title}}</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:2px">${{time}} · ${{loc}} · ${{lvl}}</div>
+      </div>
+      <div style="display:flex;gap:4px;flex-shrink:0">
+        <button onclick="_doSwap('${{slot}}','${{a.event_id}}','replace')"
+          style="font-size:11px;padding:4px 8px;border-radius:4px;cursor:pointer;background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.4);color:var(--accent)">→ Swap</button>
+        <button onclick="_doSwap('${{slot}}','${{a.event_id}}','backup')"
+          style="font-size:11px;padding:4px 8px;border-radius:4px;cursor:pointer;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);color:#f59e0b">⚑ Backup</button>
+      </div>
+    </div>`;
+  }}).join('');
+  return `<div style="font-size:11px;font-weight:600;color:var(--text-3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Alternatives (${{alts.length}})</div>${{rows}}`;
+}}
+
+async function _doSwap(slot, newId, mode) {{
+  const res = await fetch(_API + '/api/swap', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{slot, new_event_id: newId, mode}})
+  }});
+  if (res.ok) location.reload();
+  else alert('Swap failed — ' + await res.text());
+}}
+
+async function removeSession(eventId) {{
+  if (!confirm('Remove this session from your schedule?')) return;
+  const res = await fetch(_API + '/api/remove', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{event_id: eventId}})
+  }});
+  if (res.ok) location.reload();
+  else alert('Remove failed');
+}}
+</script>"""
+
+    title = "Schedule" + (" — Live Edit" if interactive_port else "")
+    return _html_page(title, body)
 
 
 # ── Step 7: Registration Status ────────────────────────────────────────────────
