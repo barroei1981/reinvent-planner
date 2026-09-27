@@ -74,7 +74,10 @@ preferences:
         - "inference"
         - "computer vision"
         - "nlp"
-      weight: 8
+        - "neural network"
+        - "training"
+        - "hyperpod"
+      weight: 10
 
     - name: "Data & Analytics"
       keywords:
@@ -87,7 +90,13 @@ preferences:
         - "kinesis"
         - "streaming"
         - "analytics"
-      weight: 6
+        - "data platform"
+        - "data engineering"
+        - "data pipeline"
+        - "lakehouse"
+        - "apache spark"
+        - "etl"
+      weight: 10
 
     - name: "Serverless"
       keywords:
@@ -111,6 +120,23 @@ preferences:
     acceptable: 0.6
     avoid: 0.2
     unknown: 0.5     # when level is not set on the session
+
+  # ── Domain diversity / balance ───────────────────────────────────────────────
+  # Prevents the schedule from being monopolised by one domain (e.g. all AI).
+  # The scheduler gives a score bonus to the first sessions from under-represented
+  # domains and applies a penalty once a domain hits its per-day cap.
+  domain_balance:
+    enabled: true
+    # Score bonus when this is the FIRST session from a domain on a given day.
+    # Raises a Data/ML session above a marginal AI session when AI slots are filling up.
+    first_session_bonus: 0.20
+    # Bonus for the second session from the same domain (smaller nudge)
+    second_session_bonus: 0.05
+    # Once a domain has this many sessions on a day, apply cap_penalty to more from that domain.
+    max_per_day: 3
+    # Score penalty subtracted once a domain exceeds max_per_day.
+    # 0.45 means an AI session scoring 0.90 drops to 0.45 when AI already has 3 slots.
+    cap_penalty: 0.45
 
   # Schedule optimizer settings
   max_sessions_per_day: 6

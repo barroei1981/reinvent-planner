@@ -1082,3 +1082,215 @@ def html_slot_alternatives(slot_sessions: list, day: str, time_window: str) -> s
 </div>"""
 
     return _html_page(f"Edit Slot — {_DAY_NAMES.get(day, day)} {time_window}", body)
+
+
+# ── Plan approval gate (HTML, for `plan --html`) ──────────────────────────────
+
+def html_approval_gate(
+    replacements: list[tuple[str, dict, dict]],
+    additions: list[tuple[str, dict]],
+    drops: list[tuple[str, dict]],
+) -> str:
+    """Browser-based per-slot plan approval. POSTs choices JSON to /approve."""
+
+    _DN_AP = {
+        "2026-11-30": "Mon Nov 30", "2026-12-01": "Tue Dec 1",
+        "2026-12-02": "Wed Dec 2",  "2026-12-03": "Thu Dec 3",
+        "2026-12-04": "Thu Dec 4",  "2026-12-05": "Fri Dec 5",
+    }
+
+    def _slab(slot: str) -> str:
+        day, _, time = slot.partition("T")
+        return f"{_DN_AP.get(day, day)}&nbsp;&nbsp;{time[:5]}"
+
+    def _venue(s: dict) -> str:
+        return (s.get("location") or "—").split("|")[0].strip()[:34]
+
+    def _pct(s: dict) -> int:
+        return int(float(s.get("score", 0)) * 100)
+
+    def _lvl_badge(lvl: str | None) -> str:
+        lvl = lvl or "—"
+        return f'<span class="badge chip-{lvl}">{lvl}</span>'
+
+    total = len(replacements) + len(additions) + len(drops)
+
+    # ── Replacement cards ─────────────────────────────────────────────────────
+    rep_html = ""
+    if replacements:
+        rep_html += f'<h2 class="ap-section-head">⚡ {len(replacements)} Changed Slot{"s" if len(replacements) != 1 else ""}</h2>'
+        for slot, curr, new in replacements:
+            c_pct, n_pct = _pct(curr), _pct(new)
+            rep_html += f"""
+<div class="ap-card" data-slot="{slot}" data-type="replacement">
+  <div class="ap-header">
+    <span style="font-weight:700">{_slab(slot)}</span>
+    <span class="tag">⚡ Replacement</span>
+  </div>
+  <div class="ap-split">
+    <div class="ap-col">
+      <div class="ap-col-label">Current</div>
+      <div class="ap-badges">{_lvl_badge(curr.get("learning_level"))}
+        <span class="badge" style="background:rgba(99,102,241,.1);color:var(--accent);border-color:rgba(99,102,241,.3)">{c_pct}%</span>
+      </div>
+      <div class="ap-title">{curr.get("title","?")[:78]}</div>
+      <div class="ap-venue">{_venue(curr)}</div>
+    </div>
+    <div class="ap-arrow">→</div>
+    <div class="ap-col ap-col-bedrock">
+      <div class="ap-col-label" style="color:var(--accent)">Bedrock</div>
+      <div class="ap-badges">{_lvl_badge(new.get("learning_level"))}
+        <span class="badge" style="background:rgba(99,102,241,.1);color:var(--accent);border-color:rgba(99,102,241,.3)">{n_pct}%</span>
+      </div>
+      <div class="ap-title">{new.get("title","?")[:78]}</div>
+      <div class="ap-venue">{_venue(new)}</div>
+    </div>
+  </div>
+  <div class="ap-choices">
+    <button class="ap-choice ap-sel" data-choice="1" onclick="pickChoice(this)">
+      <span class="cn">1</span>Keep current <span class="ch">+ Bedrock as backup</span>
+    </button>
+    <button class="ap-choice" data-choice="2" onclick="pickChoice(this)">
+      <span class="cn">2</span>Switch to Bedrock <span class="ch">+ keep as backup</span>
+    </button>
+    <button class="ap-choice" data-choice="3" onclick="pickChoice(this)">
+      <span class="cn">3</span>Keep only current
+    </button>
+    <button class="ap-choice" data-choice="4" onclick="pickChoice(this)">
+      <span class="cn">4</span>Only Bedrock
+    </button>
+  </div>
+</div>"""
+
+    # ── Addition cards ────────────────────────────────────────────────────────
+    add_html = ""
+    if additions:
+        add_html += f'<h2 class="ap-section-head">+ {len(additions)} New Slot{"s" if len(additions) != 1 else ""}</h2>'
+        for slot, new in additions:
+            n_pct = _pct(new)
+            add_html += f"""
+<div class="ap-card" data-slot="{slot}" data-type="addition">
+  <div class="ap-header">
+    <span style="font-weight:700">{_slab(slot)}</span>
+    <span class="tag" style="color:var(--green);border-color:rgba(52,211,153,.4)">+ New</span>
+  </div>
+  <div class="ap-badges">{_lvl_badge(new.get("learning_level"))}
+    <span class="badge" style="background:rgba(99,102,241,.1);color:var(--accent);border-color:rgba(99,102,241,.3)">{n_pct}%</span>
+  </div>
+  <div class="ap-title">{new.get("title","?")[:78]}</div>
+  <div class="ap-venue" style="margin-bottom:10px">{_venue(new)}</div>
+  <div class="ap-toggle">
+    <button class="ap-yn ap-sel" data-val="true" onclick="pickToggle(this)">✓ Include</button>
+    <button class="ap-yn" data-val="false" onclick="pickToggle(this)">Skip</button>
+  </div>
+</div>"""
+
+    # ── Drop cards ────────────────────────────────────────────────────────────
+    drop_html = ""
+    if drops:
+        drop_html += f'<h2 class="ap-section-head">✕ {len(drops)} Dropped Slot{"s" if len(drops) != 1 else ""}</h2>'
+        for slot, curr in drops:
+            c_pct = _pct(curr)
+            drop_html += f"""
+<div class="ap-card" data-slot="{slot}" data-type="drop">
+  <div class="ap-header">
+    <span style="font-weight:700">{_slab(slot)}</span>
+    <span class="tag" style="color:var(--red);border-color:rgba(248,113,113,.4)">✕ Removed by Bedrock</span>
+  </div>
+  <div class="ap-badges">{_lvl_badge(curr.get("learning_level"))}
+    <span class="badge" style="background:rgba(99,102,241,.1);color:var(--accent);border-color:rgba(99,102,241,.3)">{c_pct}%</span>
+  </div>
+  <div class="ap-title">{curr.get("title","?")[:78]}</div>
+  <div class="ap-venue" style="margin-bottom:10px">{_venue(curr)}</div>
+  <div class="ap-toggle">
+    <button class="ap-yn ap-sel" data-val="true" onclick="pickToggle(this)">✓ Keep</button>
+    <button class="ap-yn" data-val="false" onclick="pickToggle(this)">Drop</button>
+  </div>
+</div>"""
+
+    body = f"""
+<div class="panel flex" style="margin-bottom:20px">
+  <div>
+    <h1 style="font-size:20px;font-weight:700">Plan Review</h1>
+    <p style="color:var(--text-3);margin-top:4px">{total} slot{"s" if total != 1 else ""} to review — make your choices below, then click Confirm</p>
+  </div>
+</div>
+{rep_html}
+{add_html}
+{drop_html}
+<div style="position:sticky;bottom:0;padding:14px 0;background:var(--bg);border-top:1px solid var(--border);margin-top:24px;display:flex;gap:14px;align-items:center">
+  <button id="confirm-btn" onclick="confirmPlan()"
+    style="background:rgba(99,102,241,.22);border:1px solid var(--accent);color:var(--accent);
+           padding:10px 28px;font-size:15px;font-weight:700;border-radius:8px;cursor:pointer">
+    Confirm Plan →
+  </button>
+  <span id="confirm-status" style="color:var(--text-3);font-size:13px"></span>
+</div>
+<style>
+.ap-section-head{{margin:24px 0 10px;font-size:14px;font-weight:700;color:var(--text-2)}}
+.ap-card{{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:16px;margin-bottom:12px;backdrop-filter:blur(8px)}}
+.ap-header{{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:13px;color:var(--text-2)}}
+.ap-badges{{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}}
+.ap-split{{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:start;margin-bottom:12px}}
+.ap-col{{background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px}}
+.ap-col-bedrock{{border-color:rgba(99,102,241,.22)}}
+.ap-col-label{{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);margin-bottom:8px}}
+.ap-arrow{{color:var(--text-3);font-size:20px;align-self:center;padding-top:22px}}
+.ap-title{{font-size:13px;font-weight:600;line-height:1.4;margin-bottom:4px}}
+.ap-venue{{font-size:11px;color:var(--text-3)}}
+.ap-choices{{display:flex;flex-wrap:wrap;gap:6px}}
+.ap-choice{{flex:1;min-width:155px;padding:8px 10px;border-radius:var(--r-sm);text-align:left;font-size:12px;font-weight:600;background:var(--surface);border:1px solid var(--border);color:var(--text-2);cursor:pointer;transition:all .12s}}
+.ap-choice.ap-sel{{background:rgba(99,102,241,.18);border-color:rgba(99,102,241,.5);color:var(--accent)}}
+.ap-choice:hover{{border-color:rgba(99,102,241,.38)}}
+.cn{{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;border:1px solid currentColor;font-size:10px;margin-right:5px;flex-shrink:0}}
+.ch{{color:var(--text-3);font-weight:400}}
+.ap-toggle{{display:flex;gap:6px}}
+.ap-yn{{padding:6px 18px;border-radius:var(--r-sm);font-size:12px;font-weight:600;cursor:pointer;background:var(--surface);border:1px solid var(--border);color:var(--text-2)}}
+.ap-yn.ap-sel{{background:rgba(99,102,241,.18);border-color:rgba(99,102,241,.5);color:var(--accent)}}
+@media(max-width:580px){{.ap-split{{grid-template-columns:1fr}}.ap-arrow{{display:none}}}}
+</style>
+<script>
+function pickChoice(btn){{
+  btn.closest('.ap-card').querySelectorAll('.ap-choice').forEach(b=>b.classList.remove('ap-sel'));
+  btn.classList.add('ap-sel');
+}}
+function pickToggle(btn){{
+  btn.closest('.ap-toggle').querySelectorAll('.ap-yn').forEach(b=>b.classList.remove('ap-sel'));
+  btn.classList.add('ap-sel');
+}}
+async function confirmPlan(){{
+  const btn=document.getElementById('confirm-btn');
+  const st=document.getElementById('confirm-status');
+  btn.disabled=true; btn.textContent='⋯ Saving…';
+  const replacements=[],additions=[],drops=[];
+  document.querySelectorAll('.ap-card').forEach(card=>{{
+    const slot=card.dataset.slot, type=card.dataset.type;
+    if(type==='replacement'){{
+      const s=card.querySelector('.ap-choice.ap-sel');
+      replacements.push({{slot,choice:s?s.dataset.choice:'1'}});
+    }}else if(type==='addition'){{
+      const s=card.querySelector('.ap-yn.ap-sel');
+      additions.push({{slot,include:s?s.dataset.val==='true':true}});
+    }}else if(type==='drop'){{
+      const s=card.querySelector('.ap-yn.ap-sel');
+      drops.push({{slot,keep:s?s.dataset.val==='true':true}});
+    }}
+  }});
+  try{{
+    const res=await fetch('/approve',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{replacements,additions,drops}})}});
+    if(res.ok){{
+      btn.textContent='✓ Loading schedule…';
+      const html=await res.text();
+      document.open(); document.write(html); document.close();
+    }}else{{
+      btn.disabled=false; btn.textContent='Confirm Plan →';
+      st.textContent='Error: '+await res.text(); st.style.color='var(--red)';
+    }}
+  }}catch(e){{
+    btn.disabled=false; btn.textContent='Confirm Plan →';
+    st.textContent='Server unreachable: '+e.message; st.style.color='var(--red)';
+  }}
+}}
+</script>"""
+
+    return _html_page("Plan Review", body)

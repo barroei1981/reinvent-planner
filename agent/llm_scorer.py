@@ -49,6 +49,11 @@ def _build_prompt(sessions: list[Session], context: str) -> str:
     return (
         "You are scoring AWS re:Invent 2026 conference sessions for a specific attendee.\n\n"
         f"Attendee preferences:\n{context}\n\n"
+        "IMPORTANT — domain balance: the attendee wants EQUAL coverage across THREE domains: "
+        "Generative AI / Agentic AI, Machine Learning, and Data & Analytics. "
+        "Score strong Data Analytics and Machine Learning sessions just as highly as strong AI sessions. "
+        "Do NOT over-favour AI sessions — a well-scored session list should have top-scored sessions "
+        "spread across all three domains.\n\n"
         f"Sessions to score (0.0–1.0, where 1.0 = perfect match for this attendee):\n{lines}\n\n"
         "Respond with ONLY a JSON array, one object per session in the same order:\n"
         '[{"id": "<event_id>", "score": <float 0.0-1.0>}, ...]\n\n'
@@ -96,11 +101,18 @@ class LLMScorer:
 
     def _llm_score(self, sessions: list[Session]) -> list[Session] | None:
         """Score sessions with Bedrock. Returns None to signal fallback."""
+        import sys
         score_map: dict[str, float] = {}
+        total_batches = (len(sessions) + _BATCH_SIZE - 1) // _BATCH_SIZE
         try:
-            for i in range(0, len(sessions), _BATCH_SIZE):
+            for batch_num, i in enumerate(range(0, len(sessions), _BATCH_SIZE), 1):
                 score_map.update(self._invoke_batch(sessions[i: i + _BATCH_SIZE]))
+                print(f"\r  Bedrock scoring: {batch_num}/{total_batches} batches "
+                      f"({batch_num * _BATCH_SIZE if batch_num < total_batches else len(sessions)}"
+                      f"/{len(sessions)} sessions)   ", end="", flush=True)
+            print()  # newline after progress
         except Exception as exc:
+            print()
             logger.debug("Bedrock scoring failed (%s) — falling back to keyword scorer", exc)
             return None
 
