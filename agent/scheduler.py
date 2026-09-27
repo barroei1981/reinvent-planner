@@ -68,6 +68,18 @@ def _overlaps(start_a: datetime, end_a: datetime, start_b: datetime, end_b: date
     return start_a < end_b and start_b < end_a
 
 
+def _classify_domain(session: Session, domains: list[dict]) -> str:
+    """Return the domain name with the most keyword matches (case-insensitive)."""
+    text = f"{session.title} {session.description or ''}".lower()
+    best_name, best_hits = "Other", 0
+    for d in domains:
+        hits = sum(1 for kw in d.get("keywords", []) if kw.lower() in text)
+        if hits > best_hits:
+            best_hits = hits
+            best_name = d["name"]
+    return best_name
+
+
 def build_schedule(
     sessions: list[Session],
     config: dict[str, Any],
@@ -83,6 +95,15 @@ def build_schedule(
     if isinstance(default_durations, dict) and "default" not in default_durations:
         default_durations["default"] = 60
 
+    # Domain balance config
+    db = prefs.get("domain_balance", {})
+    balance_enabled: bool = bool(db.get("enabled", False))
+    first_bonus: float = float(db.get("first_session_bonus", 0.0))
+    second_bonus: float = float(db.get("second_session_bonus", 0.0))
+    max_domain_per_day: int = int(db.get("max_per_day", 999))
+    cap_penalty: float = float(db.get("cap_penalty", 0.0))
+    domains_cfg: list[dict] = prefs.get("domains", []) if balance_enabled else []
+
     # Group by day, each day sorted by raw score desc
     by_day: dict[str, list[Session]] = {}
     for s in sessions:
@@ -96,9 +117,8 @@ def build_schedule(
         candidates = by_day[day]
         accepted: list[ScheduledSession] = []
         last_cluster: Optional[int] = None
+        domain_counts: dict[str, int] = {}
 
-        # Two-pass: first pass uses raw score; re-sort considering hop penalty
-        # We loop greedily but re-evaluate placement order by adjusted score.
         remaining = list(candidates)
 
         while len(accepted) < max_per_day and remaining:
@@ -120,7 +140,18 @@ def build_schedule(
 
                 cluster = _resolve_cluster(cand.location, venue_clusters_cfg)
                 cost = _hop_cost(last_cluster, cluster, hop_costs)
-                adjusted = cand.score - hop_penalty * cost * 0.1  # scale penalty to score range
+                adjusted = cand.score - hop_penalty * cost * 0.1
+
+                # Domain diversity adjustment
+                if domains_cfg:
+                    domain = _classify_domain(cand, domains_cfg)
+                    count = domain_counts.get(domain, 0)
+                    if count == 0:
+                        adjusted += first_bonus
+                    elif count == 1:
+                        adjusted += second_bonus
+                    if count >= max_domain_per_day:
+                        adjusted -= cap_penalty
 
                 if adjusted > best_adjusted:
                     best_adjusted = adjusted
@@ -136,6 +167,9 @@ def build_schedule(
             ss = ScheduledSession(session=chosen, day=day, start=start, end=end)
             accepted.append(ss)
             last_cluster = _resolve_cluster(chosen.location, venue_clusters_cfg)
+            if domains_cfg:
+                dom = _classify_domain(chosen, domains_cfg)
+                domain_counts[dom] = domain_counts.get(dom, 0) + 1
             schedule.append(ss)
 
         # Sort day's accepted sessions by start time for display

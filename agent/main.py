@@ -190,6 +190,154 @@ def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Option
     return final
 
 
+def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Optional[list[dict]]:
+    """HTML-based approval gate — opens a browser page instead of terminal prompts.
+
+    Falls back to _run_approval_gate() if uvicorn/starlette are not installed.
+    """
+    existing_backups = [s for s in existing if s.get("backup")]
+    existing_primaries = {
+        s["scheduled_start"][:16]: s
+        for s in existing
+        if not s.get("backup") and s.get("scheduled_start")
+    }
+    new_by_slot = {
+        s["scheduled_start"][:16]: s
+        for s in new_sessions
+        if s.get("scheduled_start")
+    }
+
+    all_slots = sorted(set(existing_primaries) | set(new_by_slot))
+    unchanged, replacements, additions, drops = [], [], [], []
+
+    for slot in all_slots:
+        e = existing_primaries.get(slot)
+        n = new_by_slot.get(slot)
+        if e and n:
+            if e["event_id"] == n["event_id"]:
+                unchanged.append((slot, n))
+            else:
+                replacements.append((slot, e, n))
+        elif n:
+            additions.append((slot, n))
+        else:
+            drops.append((slot, e))
+
+    if not replacements and not additions and not drops:
+        console.print("\n[dim]No session changes vs existing schedule.[/dim]")
+        final = [s for _, s in unchanged]
+        for b in existing_backups:
+            if b["event_id"] not in {s["event_id"] for s in final}:
+                final.append(b)
+        final.sort(key=lambda s: (s.get("start_date", ""), s.get("scheduled_start", "")))
+        return final
+
+    try:
+        from starlette.applications import Starlette
+        from starlette.responses import HTMLResponse, JSONResponse
+        from starlette.routing import Route
+        import uvicorn
+    except ImportError:
+        console.print("[yellow]starlette/uvicorn not installed — using terminal approval gate[/yellow]")
+        console.print("[dim](Run `uv sync --extra mcp` to enable the HTML gate)[/dim]")
+        return _run_approval_gate(existing, new_sessions)
+
+    from agent.html_views import html_approval_gate
+    html = html_approval_gate(replacements, additions, drops)
+
+    import threading
+    import webbrowser
+
+    _choices: dict = {}   # populated by POST handler before _done is set
+    _done = threading.Event()
+
+    async def _get(request):
+        return HTMLResponse(html)
+
+    async def _post(request):
+        body = await request.json()
+
+        rep_choices = {r["slot"]: r.get("choice", "1") for r in body.get("replacements", [])}
+        add_choices = {a["slot"]: a.get("include", True) for a in body.get("additions", [])}
+        drop_choices = {d["slot"]: d.get("keep", True) for d in body.get("drops", [])}
+
+        final: list[dict] = [s for _, s in unchanged]
+
+        for slot, curr, new in replacements:
+            choice = rep_choices.get(slot, "1")
+            if choice == "2":
+                final.append(new)
+                final.append({**curr, "backup": True,
+                               "backup_note": "Previous primary, replaced by Bedrock recommendation"})
+            elif choice == "3":
+                final.append(curr)
+            elif choice == "4":
+                final.append(new)
+            else:
+                final.append(curr)
+                final.append({**new, "backup": True,
+                               "backup_note": f"Bedrock alternative for: {curr['title'][:55]}"})
+
+        for slot, new in additions:
+            if add_choices.get(slot, True):
+                final.append(new)
+
+        for slot, curr in drops:
+            if drop_choices.get(slot, True):
+                final.append(curr)
+
+        final_ids = {s["event_id"] for s in final}
+        for b in existing_backups:
+            if b["event_id"] not in final_ids:
+                final.append(b)
+
+        final.sort(key=lambda s: (s.get("start_date", ""), s.get("scheduled_start", "")))
+
+        import json as _json
+        with open(_SCHEDULE_PATH, "w") as f:
+            _json.dump(final, f, indent=2)
+
+        _choices["final"] = final
+        _done.set()
+
+        from agent.html_views import html_schedule
+        return HTMLResponse(html_schedule(final))
+
+    app = Starlette(routes=[
+        Route("/", _get),
+        Route("/approve", _post, methods=["POST"]),
+    ])
+
+    import socket
+    port = 8766
+    for candidate in range(8766, 8776):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", candidate)) != 0:
+                port = candidate
+                break
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+
+    import time
+    time.sleep(0.7)
+    webbrowser.open(f"http://localhost:{port}")
+
+    total = len(replacements) + len(additions) + len(drops)
+    console.print(f"\n[bold cyan]⚡  Plan approval opened in browser[/bold cyan]  [dim]http://localhost:{port}[/dim]")
+    console.print(f"[dim]Review {total} slot change(s) and click Confirm Plan.[/dim]\n")
+
+    _done.wait()
+    # Schedule already written by POST handler; keep server alive a moment for
+    # the browser to finish loading the redirected schedule view, then exit.
+    import time as _time
+    _time.sleep(2)
+    server.should_exit = True
+
+    return _choices.get("final", [])
+
+
 def _load_config() -> dict:
     if not _CONFIG_PATH.exists():
         raise click.ClickException(f"config.yaml not found — copy from config.yaml.example and fill in your preferences")
@@ -340,7 +488,8 @@ def sync_wishlist_cmd(headless: bool) -> None:
 @click.option("--min-score", default=0.0, type=float, help="Only show sessions with score >= N (0-1)")
 @click.option("--day", default=None, help="Filter to one day YYYY-MM-DD")
 @click.option("--all-events", is_flag=True, default=False, help="Ignore date/location filters — plan from full catalog")
-def plan(min_score: float, day: Optional[str], all_events: bool) -> None:
+@click.option("--html", "with_html", is_flag=True, default=False, help="Use browser-based approval gate instead of terminal prompts")
+def plan(min_score: float, day: Optional[str], all_events: bool, with_html: bool) -> None:
     """Score + schedule sessions. Uses scraped catalog (reinvent_catalog.json) when available,
     falls back to the public AWS Events API otherwise."""
 
@@ -412,7 +561,10 @@ def plan(min_score: float, day: Optional[str], all_events: bool) -> None:
         if _SCHEDULE_PATH.exists():
             with open(_SCHEDULE_PATH) as f:
                 existing = json.load(f)
-            result = _run_approval_gate(existing, new_sessions)
+            if with_html:
+                result = _run_html_approval_gate(existing, new_sessions)
+            else:
+                result = _run_approval_gate(existing, new_sessions)
             if result is None:
                 console.print("[dim]Schedule not saved — existing schedule unchanged.[/dim]")
                 return
