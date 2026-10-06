@@ -105,6 +105,13 @@ async def get_schedule_api(request: Request) -> JSONResponse:
     return JSONResponse(_load_schedule())
 
 
+async def put_schedule_api(request: Request) -> JSONResponse:
+    """Update the entire schedule (used for swap operations)."""
+    schedule = await request.json()
+    _save_schedule(schedule)
+    return JSONResponse({"ok": True})
+
+
 async def get_alternatives(request: Request) -> JSONResponse:
     slot = request.query_params.get("slot", "")   # YYYY-MM-DDTHH:MM
     exclude_id = request.query_params.get("exclude", "")
@@ -269,7 +276,8 @@ def create_app(port: int = 8080) -> Starlette:
         lifespan=_lifespan,
         routes=[
             Route("/", get_index),
-            Route("/api/schedule", get_schedule_api),
+            Route("/api/schedule", get_schedule_api, methods=["GET"]),
+            Route("/api/schedule", put_schedule_api, methods=["PUT"]),
             Route("/api/alternatives", get_alternatives),
             Route("/api/event/{event_id}", get_event_detail),
             Route("/api/swap", post_swap, methods=["POST"]),
