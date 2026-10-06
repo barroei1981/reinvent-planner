@@ -452,6 +452,16 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
     When ``interactive_port`` is set the HTML is served from a local web server
     and gains live edit controls: swap sessions, add backups, remove sessions.
     """
+    # Build slot map to detect primary/backup pairs
+    slot_map: dict[str, dict] = {}
+    for s in schedule:
+        slot = (s.get("scheduled_start") or "")[:16]
+        if slot:
+            if s.get("backup"):
+                slot_map.setdefault(slot, {})["backup"] = s
+            else:
+                slot_map.setdefault(slot, {})["primary"] = s
+
     by_day: dict[str, list[dict]] = {}
     for s in schedule:
         by_day.setdefault(s.get("start_date", "unknown"), []).append(s)
@@ -533,6 +543,24 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
             # Interactive controls (only when served from the local web server)
             if interactive_port and not is_keynote:
                 _q = lambda v: v.replace("'", "\\'")
+
+                # Check if there's a backup at this slot
+                slot_info = slot_map.get(slot_key, {})
+                has_pair = "backup" in slot_info and "primary" in slot_info
+
+                # Swap button (only if primary/backup pair exists)
+                if has_pair:
+                    partner_id = slot_info["backup"]["event_id"] if not is_backup else slot_info["primary"]["event_id"]
+                    swap_btn = (
+                        f'<button onclick="swapWithBackup(\'{_q(eid)}\',\'{_q(partner_id)}\',\'{slot_key}\')" '
+                        f'title="Swap primary and backup" '
+                        f'style="font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer;'
+                        f'background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.35);'
+                        f'color:#f59e0b;margin-right:4px">↔ Swap</button>'
+                    )
+                else:
+                    swap_btn = ""
+
                 edit_btn = (
                     f'<button id="eb-{eid}" onclick="toggleEdit(this,\'{_q(eid)}\',\'{slot_key}\')" '
                     f'title="Find alternatives for this slot" '
@@ -546,7 +574,7 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
                     f'background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.25);'
                     f'color:#f87171;margin-left:4px">✕</button>'
                 )
-                interactive_controls = f'<span style="display:inline-flex;align-items:center;margin-left:8px">{edit_btn}{remove_btn}</span>'
+                interactive_controls = f'<span style="display:inline-flex;align-items:center;margin-left:8px">{swap_btn}{edit_btn}{remove_btn}</span>'
                 alt_panel = f'<div id="ap-{eid}" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px"></div>'
             else:
                 interactive_controls = ""
@@ -691,12 +719,25 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
 }}
 </style>
 <script>
+// Restore active day after reload
+(function(){{
+  const saved = localStorage.getItem('rp-active-day');
+  if (saved) {{
+    localStorage.removeItem('rp-active-day');
+    setTimeout(() => showDay(saved), 0);
+  }}
+}})();
+
 function showDay(id) {{
   document.querySelectorAll('.day-panel').forEach(p => p.style.display='none');
   document.querySelectorAll('.day-tab').forEach(t => {{ t.classList.remove('active'); t.setAttribute('aria-selected','false'); }});
-  document.getElementById('day-'+id).style.display='block';
+  const panel = document.getElementById('day-'+id);
   const tab = document.getElementById('tab-'+id);
-  tab.classList.add('active'); tab.setAttribute('aria-selected','true');
+  if (panel && tab) {{
+    panel.style.display='block';
+    tab.classList.add('active');
+    tab.setAttribute('aria-selected','true');
+  }}
 }}
 </script>"""
 
@@ -858,6 +899,77 @@ async function removeSession(eventId) {{
   }});
   if (res.ok) location.reload();
   else alert('Remove failed');
+}}
+
+async function swapWithBackup(eventId, partnerId, slot) {{
+  try {{
+    // Save current day for restore after reload
+    const activeDay = document.querySelector('.day-panel[style*="display:block"]')?.id?.replace('day-','');
+    if (activeDay) localStorage.setItem('rp-active-day', activeDay);
+
+    // Fetch current schedule
+    const schedule = await fetch(_API + '/api/schedule').then(r => r.json());
+
+    // Find the two sessions (don't care which is which)
+    const sess1 = schedule.find(s => s.event_id === eventId);
+    const sess2 = schedule.find(s => s.event_id === partnerId);
+
+    if (!sess1 || !sess2) {{
+      alert(`Could not find sessions: ${{eventId.slice(0,10)}} / ${{partnerId.slice(0,10)}}`);
+      return;
+    }}
+
+    console.log('Swapping:', sess1.title.slice(0,40), '(backup=' + !!sess1.backup + ') <-> ',
+                sess2.title.slice(0,40), '(backup=' + !!sess2.backup + ')');
+
+    // Swap their backup flags
+    const updated = schedule.map(s => {{
+      if (s.event_id === eventId) {{
+        const newBackup = !s.backup;
+        const copy = {{...s, backup: newBackup}};
+        if (newBackup) {{
+          copy.backup_note = `Alternative for: ${{sess2.title.slice(0,55)}}`;
+        }} else {{
+          delete copy.backup;
+          delete copy.backup_note;
+        }}
+        console.log('Session 1 now backup=' + newBackup);
+        return copy;
+      }}
+      if (s.event_id === partnerId) {{
+        const newBackup = !s.backup;
+        const copy = {{...s, backup: newBackup}};
+        if (newBackup) {{
+          copy.backup_note = `Alternative for: ${{sess1.title.slice(0,55)}}`;
+        }} else {{
+          delete copy.backup;
+          delete copy.backup_note;
+        }}
+        console.log('Session 2 now backup=' + newBackup);
+        return copy;
+      }}
+      return s;
+    }});
+
+    console.log('Sending PUT request...');
+    const res = await fetch(_API + '/api/schedule', {{
+      method: 'PUT',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(updated)
+    }});
+
+    if (res.ok) {{
+      console.log('Swap successful, reloading...');
+      location.reload();
+    }} else {{
+      const err = await res.text();
+      console.error('Swap failed:', err);
+      alert('Swap failed: ' + err);
+    }}
+  }} catch (e) {{
+    console.error('Swap error:', e);
+    alert('Swap error: ' + e.message);
+  }}
 }}
 </script>"""
 

@@ -188,16 +188,16 @@ venue_hop_costs:
 registration:
   enabled: true
   # Your AWS Builder / re:Invent registration email
-  email: "your@email.com"
+  email: "roei.bar@bankleumi.co.il"
   # Password comes from .env: AWSEVENTS_PASSWORD
   # How often to poll for session availability (seconds)
-  watch_interval_seconds: 30
+  watch_interval_seconds: 600  # 10 minutes
   # Max retries per session before giving up
   max_retries: 3
   # Maximum sessions to register for (across all days)
-  max_sessions_to_register: 25
+  max_sessions_to_register: 47  # Try all sessions in schedule
   # Headless browser (true = no visible window; false = show browser)
-  headless: false
+  headless: true  # Headless for watch mode
 
 # ── Optional LLM scoring via Amazon Bedrock ──────────────────────────────────
 # When enabled, sessions are re-ranked by Claude instead of pure keyword matching.
