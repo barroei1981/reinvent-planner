@@ -31,14 +31,22 @@ except ImportError:
     _PLAYWRIGHT_AVAILABLE = False
 
 _CHROME_USER_DATA_DIR = Path.home() / "Library/Application Support/Google/Chrome"
+_PLAYWRIGHT_CHROME_PROFILE = Path.home() / ".awsevents_chrome_profile"
 _REGISTRATION_BASE = "https://registration.awsevents.com"
 
 _REGISTER_BUTTON_SELECTORS = [
     "button:has-text('Reserve Seat')",
     "button:has-text('Register')",
     "button:has-text('Add to Schedule')",
+    "button:has-text('Reserve')",
+    "button:has-text('Sign Up')",
     "a:has-text('Reserve Seat')",
     "a:has-text('Register Now')",
+    "a:has-text('Register')",
+    "[data-testid*='register']",
+    "[data-testid*='reserve']",
+    ".register-button",
+    ".reserve-button",
 ]
 
 _FULL_INDICATORS = [
@@ -141,69 +149,88 @@ async def _try_register_session(page: Page, session: Session, email: str, passwo
 
     page_text = (await page.content()).lower()
 
-    for indicator in _NOT_OPEN_INDICATORS:
-        if indicator in page_text:
-            return RegistrationResult(session=session, status="not_open", message=indicator)
+    # Debug: check what status indicators are present
+    has_reserved = "reserved" in page_text or "reserve seat" in page_text
+    has_walk_in = "walk-in" in page_text or "walk in" in page_text or "waitlist" in page_text
+    has_registered = "you are registered" in page_text or "already registered" in page_text or "you're registered" in page_text
 
-    for indicator in _FULL_INDICATORS:
-        if indicator in page_text:
-            return RegistrationResult(session=session, status="full", message=indicator)
+    # If walk-in/waitlist, treat as NOT registered - we want to upgrade to reserved!
+    if has_walk_in:
+        print(f"    → walk-in/waitlist detected - will try to reserve seat")
+        # Continue to button clicking to upgrade to reserved
+    elif has_registered and not has_walk_in:
+        # Only skip if truly registered (not walk-in)
+        return RegistrationResult(session=session, status="already_registered", message="confirmed registration")
 
-    if "already registered" in page_text or "you are registered" in page_text:
-        return RegistrationResult(session=session, status="already_registered")
-
-    # Find and click register button
+    # TRY TO CLICK REGISTER BUTTON FIRST - if button exists, registration is open!
     for selector in _REGISTER_BUTTON_SELECTORS:
         try:
             btn = page.locator(selector).first
             if await btn.is_visible(timeout=2000):
+                print(f"  → Found button: {selector}")
                 await btn.click()
                 await page.wait_for_load_state("networkidle")
                 confirm_text = (await page.content()).lower()
                 if "registered" in confirm_text or "confirmed" in confirm_text or "success" in confirm_text:
                     return RegistrationResult(session=session, status="registered")
+                # Check if it's actually full after clicking
+                for indicator in _FULL_INDICATORS:
+                    if indicator in confirm_text:
+                        return RegistrationResult(session=session, status="full", message=indicator)
                 return RegistrationResult(session=session, status="registered", message="clicked (no explicit confirmation)")
         except Exception:
             continue
+
+    # No button found - NOW check why
+    for indicator in _FULL_INDICATORS:
+        if indicator in page_text:
+            return RegistrationResult(session=session, status="full", message=indicator)
+
+    for indicator in _NOT_OPEN_INDICATORS:
+        if indicator in page_text:
+            return RegistrationResult(session=session, status="not_open", message=indicator)
 
     return RegistrationResult(session=session, status="error", message="register button not found")
 
 
 async def _launch_context(pw, headless: bool, email: str, password: str):
-    """Launch Chrome Profile 1 (preferred) or fall back to fresh Chromium."""
-    chrome_profile = _CHROME_USER_DATA_DIR
-    if chrome_profile.exists():
-        try:
-            print("[registrar] Launching Chrome with your existing profile (auto-login)...")
-            context = await pw.chromium.launch_persistent_context(
-                user_data_dir=str(chrome_profile),
-                channel="chrome",
-                headless=headless,
-                viewport={"width": 1440, "height": 900},
-                args=["--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble"],
-            )
-            page = context.pages[0] if context.pages else await context.new_page()
-            return context, page
-        except Exception as exc:
-            print(f"[registrar] Chrome profile launch failed ({exc}) — falling back to Chromium + credentials...")
+    """Launch Chrome with dedicated Playwright profile (persists login across runs)."""
 
-    # Fallback: fresh Chromium, login will happen on first redirect
-    browser = await pw.chromium.launch(headless=headless)
-    context = await browser.new_context(
+    # Use a dedicated profile for Playwright - keeps your main Chrome profile untouched
+    playwright_profile = _PLAYWRIGHT_CHROME_PROFILE
+    playwright_profile.mkdir(exist_ok=True)
+
+    first_run = not (playwright_profile / "Default").exists()
+    if first_run:
+        print("[registrar] First run - automatic login will happen on first session")
+    else:
+        print("[registrar] Using saved login from previous run")
+
+    print(f"[registrar] Launching Chrome...")
+    context = await pw.chromium.launch_persistent_context(
+        user_data_dir=str(playwright_profile),
+        channel="chrome",
+        headless=headless,
         viewport={"width": 1440, "height": 900},
-        user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-        ),
+        args=[
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-session-crashed-bubble",
+        ],
     )
-    page = await context.new_page()
-    # Pre-warm: navigate to registration so auth cookie is established before session pages
-    try:
-        print(f"[registrar] Pre-warming session on {_REGISTRATION_BASE}...")
-        await page.goto(_REGISTRATION_BASE, wait_until="networkidle", timeout=20000)
-        await _ensure_logged_in(page, email, password)
-    except Exception:
-        pass
+    page = context.pages[0] if context.pages else await context.new_page()
+    print("[registrar] ✓ Chrome ready")
+
+    # Pre-warm with login on first run
+    if first_run:
+        try:
+            print("[registrar] Setting up login...")
+            await page.goto(_REGISTRATION_BASE, wait_until="domcontentloaded", timeout=20000)
+            await _ensure_logged_in(page, email, password)
+            print("[registrar] ✓ Login complete")
+        except Exception as e:
+            print(f"[registrar] Pre-login warning: {e} - will retry on first session")
+
     return context, page
 
 
