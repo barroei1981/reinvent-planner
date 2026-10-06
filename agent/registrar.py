@@ -23,6 +23,7 @@ from typing import Optional
 
 from agent.catalog import Session
 from agent.scheduler import ScheduledSession
+from agent.registrar_api import try_register_via_api, extract_cookies_from_playwright
 
 try:
     from playwright.async_api import async_playwright, Page, BrowserContext
@@ -259,6 +260,46 @@ class Registrar:
         self._interval: int = int(reg_config.get("watch_interval_seconds", 30))
         self._max_retries: int = int(reg_config.get("max_retries", 3))
         self._max_sessions: int = int(reg_config.get("max_sessions_to_register", 25))
+        self._api_working: Optional[bool] = None  # None = not tested, True = works, False = blocked
+        self._cookies: Optional[dict] = None  # Cookies from Playwright for API reuse
+
+    async def _try_register_hybrid(
+        self,
+        session: Session,
+        page=None,
+    ) -> RegistrationResult:
+        """Try API first, fall back to Playwright if API is blocked.
+
+        Returns RegistrationResult with via_api flag indicating method used.
+        """
+
+        # If API known to be blocked, skip straight to Playwright
+        if self._api_working is False:
+            if page is None:
+                raise ValueError("Playwright page required when API is blocked")
+            return await _try_register_session(page, session, self._email, self._password)
+
+        # Try API first
+        print(f"  → trying API registration...")
+        api_result = await try_register_via_api(session, self._email, self._password, self._cookies)
+
+        # API success - mark as working
+        if api_result.status not in ("api_blocked", "error"):
+            self._api_working = True
+            return api_result
+
+        # API blocked/failed - fall back to Playwright
+        print(f"  → API blocked/failed, using Playwright...")
+        self._api_working = False
+
+        if page is None:
+            raise ValueError("Playwright page required for fallback")
+
+        # Extract cookies for future API attempts
+        if self._cookies is None:
+            self._cookies = await extract_cookies_from_playwright(page)
+
+        return await _try_register_session(page, session, self._email, self._password)
 
     async def _attempt_with_backup(
         self,
@@ -318,11 +359,17 @@ class Registrar:
         async with async_playwright() as pw:
             context, page = await _launch_context(pw, self._headless, self._email, self._password)
 
+            # Extract cookies once for API attempts
+            if self._cookies is None:
+                self._cookies = await extract_cookies_from_playwright(page)
+
             for ss in primaries:
                 retries = 0
                 while True:
-                    result = await _try_register_session(page, ss.session, self._email, self._password)
-                    print(f"  [{result.status}] {ss.session.title[:60]}")
+                    # Try API first, fall back to Playwright
+                    result = await self._try_register_hybrid(ss.session, page)
+                    via_method = "API" if getattr(result, 'via_api', False) else "Playwright"
+                    print(f"  [{result.status}] {ss.session.title[:60]} (via {via_method})")
 
                     if result.status == "not_open" and watch and retries < self._max_retries:
                         print(f"    → not open yet, retry {retries + 1}/{self._max_retries} in {self._interval}s")
@@ -337,10 +384,9 @@ class Registrar:
                         backup_ss = backups.get(slot)
                         if backup_ss:
                             print(f"  → primary {result.status} — trying backup: {backup_ss.session.title[:55]}")
-                            backup_result = await _try_register_session(
-                                page, backup_ss.session, self._email, self._password
-                            )
-                            print(f"  [backup·{backup_result.status}] {backup_ss.session.title[:60]}")
+                            backup_result = await self._try_register_hybrid(backup_ss.session, page)
+                            via_method = "API" if getattr(backup_result, 'via_api', False) else "Playwright"
+                            print(f"  [backup·{backup_result.status}] {backup_ss.session.title[:60]} (via {via_method})")
                             results.append(backup_result)
                     break
 
@@ -369,12 +415,18 @@ class Registrar:
         async with async_playwright() as pw:
             context, page = await _launch_context(pw, self._headless, self._email, self._password)
 
+            # Extract cookies once for API attempts
+            if self._cookies is None:
+                self._cookies = await extract_cookies_from_playwright(page)
+
             while pending:
                 still_pending: list[ScheduledSession] = []
 
                 for ss in pending:
-                    result = await _try_register_session(page, ss.session, self._email, self._password)
-                    print(f"  [{result.status}] {ss.session.title[:60]}")
+                    # Try API first, fall back to Playwright
+                    result = await self._try_register_hybrid(ss.session, page)
+                    via_method = "API" if getattr(result, 'via_api', False) else "Playwright"
+                    print(f"  [{result.status}] {ss.session.title[:60]} (via {via_method})")
 
                     if result.status == "not_open":
                         still_pending.append(ss)   # retry next cycle
@@ -387,10 +439,9 @@ class Registrar:
                         backup_ss = backups.get(slot)
                         if backup_ss:
                             print(f"  → primary {result.status} — trying backup: {backup_ss.session.title[:55]}")
-                            backup_result = await _try_register_session(
-                                page, backup_ss.session, self._email, self._password
-                            )
-                            print(f"  [backup·{backup_result.status}] {backup_ss.session.title[:60]}")
+                            backup_result = await self._try_register_hybrid(backup_ss.session, page)
+                            via_method = "API" if getattr(backup_result, 'via_api', False) else "Playwright"
+                            print(f"  [backup·{backup_result.status}] {backup_ss.session.title[:60]} (via {via_method})")
                             results[backup_ss.session.event_id] = backup_result
                             if backup_result.status == "not_open":
                                 still_pending.append(backup_ss)  # backup also not open yet
