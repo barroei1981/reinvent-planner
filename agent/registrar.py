@@ -395,11 +395,13 @@ class Registrar:
         return results
 
     async def watch_and_register(self, schedule: list[ScheduledSession]) -> list[RegistrationResult]:
-        """Poll indefinitely until every primary is registered (or permanently fails).
+        """Poll indefinitely until every primary is registered.
 
-        - not_open  → keep retrying on next poll cycle
-        - full/error → try backup immediately; stop retrying primary
-        - registered/already_registered → slot done, skip backup
+        Watch mode keeps retrying until registration succeeds:
+        - not_open → keep retrying (session not yet available)
+        - full → keep retrying (seats may open up from cancellations)
+        - error → keep retrying (transient errors)
+        - registered/already_registered → done, stop retrying that session
         """
         primaries = sorted(
             [ss for ss in schedule if ss.session.registration_url and not ss.backup],
@@ -428,26 +430,25 @@ class Registrar:
                     via_method = "API" if getattr(result, 'via_api', False) else "Playwright"
                     print(f"  [{result.status}] {ss.session.title[:60]} (via {via_method})")
 
-                    if result.status == "not_open":
-                        still_pending.append(ss)   # retry next cycle
+                    # Success - stop retrying this session
+                    if result.status in _SUCCESS:
+                        results[ss.session.event_id] = result
+                        print(f"    ✓ Successfully registered!")
                         continue
 
+                    # Any non-success: keep retrying (full, not_open, error)
+                    # Sessions can go from full → available when someone cancels
+                    still_pending.append(ss)
                     results[ss.session.event_id] = result
 
-                    if result.status in _PERMANENT_FAIL:
-                        slot = ss.start.isoformat()[:16]
-                        backup_ss = backups.get(slot)
-                        if backup_ss:
-                            print(f"  → primary {result.status} — trying backup: {backup_ss.session.title[:55]}")
-                            backup_result = await self._try_register_hybrid(backup_ss.session, page)
-                            via_method = "API" if getattr(backup_result, 'via_api', False) else "Playwright"
-                            print(f"  [backup·{backup_result.status}] {backup_ss.session.title[:60]} (via {via_method})")
-                            results[backup_ss.session.event_id] = backup_result
-                            if backup_result.status == "not_open":
-                                still_pending.append(backup_ss)  # backup also not open yet
-
                 if still_pending:
-                    print(f"[registrar] {len(still_pending)} session(s) not yet open — sleeping {self._interval}s...")
+                    status_counts = {}
+                    for ss in still_pending:
+                        status = results.get(ss.session.event_id, RegistrationResult(ss.session, "unknown")).status
+                        status_counts[status] = status_counts.get(status, 0) + 1
+
+                    summary = ", ".join([f"{count} {status}" for status, count in status_counts.items()])
+                    print(f"[registrar] {len(still_pending)} sessions waiting ({summary}) — sleeping {self._interval}s...")
                     await asyncio.sleep(self._interval)
 
                 pending = still_pending
