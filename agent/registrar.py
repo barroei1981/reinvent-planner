@@ -50,12 +50,31 @@ _REGISTER_BUTTON_SELECTORS = [
     ".reserve-button",
 ]
 
+_ALREADY_REGISTERED_INDICATORS = [
+    "you're registered",
+    "you are registered",
+    "you're on the waitlist",
+    "you are on the waitlist",
+    "already registered",
+    "registration confirmed",
+    "your seat is reserved",
+    "you have reserved",
+    "remove from schedule",  # If there's a "remove" button, you're already on it
+    "cancel registration",
+    "withdraw from",
+]
+
 _FULL_INDICATORS = [
     "session is full",
     "no seats available",
-    "waitlist",
     "sold out",
     "at capacity",
+]
+
+_WAITLIST_AVAILABLE = [
+    "join waitlist",
+    "add to waitlist",
+    "request waitlist",
 ]
 
 _NOT_OPEN_INDICATORS = [
@@ -163,7 +182,12 @@ async def _try_register_session(page: Page, session: Session, email: str, passwo
         # Only skip if truly registered (not walk-in)
         return RegistrationResult(session=session, status="already_registered", message="confirmed registration")
 
-    # TRY TO CLICK REGISTER BUTTON FIRST - if button exists, registration is open!
+    # CHECK IF ALREADY REGISTERED FIRST (before trying to click anything)
+    for indicator in _ALREADY_REGISTERED_INDICATORS:
+        if indicator in page_text:
+            return RegistrationResult(session=session, status="already_registered", message=indicator)
+
+    # TRY TO CLICK REGISTER BUTTON - if button exists, registration is open!
     for selector in _REGISTER_BUTTON_SELECTORS:
         try:
             btn = page.locator(selector).first
@@ -172,20 +196,38 @@ async def _try_register_session(page: Page, session: Session, email: str, passwo
                 await btn.click()
                 await page.wait_for_load_state("networkidle")
                 confirm_text = (await page.content()).lower()
+
+                # Check if we're now registered
                 if "registered" in confirm_text or "confirmed" in confirm_text or "success" in confirm_text:
                     return RegistrationResult(session=session, status="registered")
+
                 # Check if it's actually full after clicking
                 for indicator in _FULL_INDICATORS:
                     if indicator in confirm_text:
                         return RegistrationResult(session=session, status="full", message=indicator)
+
                 return RegistrationResult(session=session, status="registered", message="clicked (no explicit confirmation)")
         except Exception:
             continue
 
-    # No button found - NOW check why
+    # No button found - check why
     for indicator in _FULL_INDICATORS:
         if indicator in page_text:
             return RegistrationResult(session=session, status="full", message=indicator)
+
+    # Check if waitlist is available
+    for indicator in _WAITLIST_AVAILABLE:
+        if indicator in page_text:
+            # Try to find and click waitlist button
+            try:
+                waitlist_btn = page.locator("button:has-text('Waitlist')").first
+                if await waitlist_btn.is_visible(timeout=2000):
+                    await waitlist_btn.click()
+                    await page.wait_for_load_state("networkidle")
+                    return RegistrationResult(session=session, status="registered", message="joined waitlist")
+            except Exception:
+                pass
+            return RegistrationResult(session=session, status="full", message="waitlist available but couldn't join")
 
     for indicator in _NOT_OPEN_INDICATORS:
         if indicator in page_text:
@@ -236,7 +278,8 @@ async def _launch_context(pw, headless: bool, email: str, password: str):
 
 
 _SUCCESS = ("registered", "already_registered")
-_PERMANENT_FAIL = ("full", "error")   # not_open is retriable; these are not
+# Note: "full", "not_open", and "error" are all retriable in watch mode
+# Watch mode only stops when a session is successfully registered
 
 
 def _backup_map(schedule: list[ScheduledSession]) -> dict[str, ScheduledSession]:
