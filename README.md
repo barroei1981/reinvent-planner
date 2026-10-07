@@ -36,6 +36,7 @@ Use it as a **CLI tool**, connect it to **Claude Desktop / Cursor / VS Code** vi
 | **HTML views** | Self-contained, offline-first HTML for recommendations, conflicts, schedule (day tabs + travel warnings), and registration status. Light/dark mode toggle. |
 | **ICS export** | One command exports your schedule to a `.ics` file — import into Google Calendar, Apple Calendar, or Outlook. |
 | **Auto-register** | Playwright logs into registration.awsevents.com and clicks Reserve Seat for every session in your schedule. `watch` mode polls until seats open. |
+| **Live status monitoring** | Cron job checks every 10 minutes + live HTML dashboard with auto-refresh. Shows RESERVED vs WAITLIST status for all 50 sessions. Detects upgrades from waitlist to confirmed seats. |
 | **Wizard** | `awsevents setup` walks you through every step interactively with console + HTML views at each stage. |
 | **Live edit UI** | `awsevents serve` opens the schedule in a browser — swap sessions, add backups, remove sessions, and drill into full details directly from every card. |
 | **MCP server** | Expose all features as MCP tools — locally via stdio or remotely over HTTP for Claude.ai, ChatGPT, Gemini, and Perplexity. |
@@ -275,6 +276,66 @@ uv run awsevents watch
 
 # Swap a session in your schedule with a recommended alternative
 uv run awsevents edit --day 2026-12-03 --time 10:30
+```
+
+---
+
+## Live status monitoring
+
+After running `awsevents register` or `awsevents watch`, set up automated monitoring with a live HTML dashboard:
+
+### Setup cron job (runs every 10 minutes)
+
+```bash
+# Create wrapper script
+mkdir -p ~/bin
+cat > ~/bin/awsevents_check.sh << 'EOF'
+#!/bin/bash
+cd /Users/roeibar/src/awsevents_agent
+/Users/roeibar/.local/bin/uv run awsevents register
+EOF
+chmod +x ~/bin/awsevents_check.sh
+
+# Add to crontab
+(crontab -l 2>/dev/null; echo "*/10 * * * * ~/bin/awsevents_check.sh >> /tmp/awsevents_cron.log 2>&1") | crontab -
+```
+
+### Start HTTP server for live dashboard
+
+```bash
+cd /tmp
+python3 -m http.server 8000 &
+
+# Open dashboard
+open http://localhost:8000/registration_report.html
+```
+
+### Dashboard features
+
+The HTML dashboard shows real-time status for all 50 sessions:
+
+| Category | Meaning | Color |
+|----------|---------|-------|
+| **✅ RESERVED** | Confirmed seats | Green |
+| **⏳ WAITLIST** | On walk-in list, monitoring for upgrades | Orange |
+| **🔒 FULL** | No waitlist available | Gray |
+| **🎯 BACKUP** | Alternative sessions | Blue |
+
+- **Auto-refreshes** every 30 seconds
+- **Updates from cron** every 10 minutes
+- **Per-session table** sorted by date with status badges
+- **Color-coded learning levels** (Expert=red, Advanced=orange, Intermediate=blue)
+
+When someone cancels a session you're waitlisted for, the cron job detects it and you automatically get upgraded from WAITLIST → RESERVED.
+
+### Monitor logs
+
+```bash
+# Watch cron activity
+tail -f /tmp/awsevents_cron.log
+
+# Check status file
+cat /tmp/awsevents_status.json
 ```
 
 ---
