@@ -139,7 +139,7 @@ preferences:
     cap_penalty: 0.45
 
   # Schedule optimizer settings
-  max_sessions_per_day: 6
+  max_sessions_per_day: 999  # No limit - register for everything that matches
   # Assumed session duration in minutes when the catalog does not provide end time.
   # Workshops: 120, Tech Talks: 60, Chalk Talks: 60, Builder Sessions: 60
   default_duration_minutes:
