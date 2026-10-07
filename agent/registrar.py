@@ -16,8 +16,10 @@ Environment:
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -282,6 +284,45 @@ _SUCCESS = ("registered", "already_registered")
 # Watch mode only stops when a session is successfully registered
 
 
+def _write_status_file(results: dict[str, RegistrationResult], schedule: list[ScheduledSession]) -> None:
+    """Write current registration status to /tmp/awsevents_status.json for HTML report."""
+    status_data = {
+        "last_check": datetime.now().isoformat(),
+        "sessions": {},
+        "summary": {
+            "already_registered": 0,
+            "full": 0,
+            "not_open": 0,
+            "error": 0,
+            "backup": 0,
+        }
+    }
+
+    for ss in schedule:
+        event_id = ss.session.event_id
+        result = results.get(event_id)
+
+        if ss.backup:
+            status = "backup"
+            status_data["summary"]["backup"] += 1
+        elif result:
+            status = result.status
+            if status in status_data["summary"]:
+                status_data["summary"][status] += 1
+        else:
+            status = "unknown"
+
+        status_data["sessions"][event_id] = {
+            "title": ss.session.title,
+            "status": status,
+            "scheduled_start": ss.start.isoformat() if ss.start else "",
+            "level": ss.session.learning_level or "Unknown",
+            "backup": ss.backup or False,
+        }
+
+    Path("/tmp/awsevents_status.json").write_text(json.dumps(status_data, indent=2))
+
+
 def _backup_map(schedule: list[ScheduledSession]) -> dict[str, ScheduledSession]:
     """Build {slot_key → backup ScheduledSession} from a schedule list."""
     return {
@@ -435,6 +476,10 @@ class Registrar:
 
             await context.close()
 
+        # Write status file for HTML report
+        results_dict = {r.session.event_id: r for r in results}
+        _write_status_file(results_dict, schedule)
+
         return results
 
     async def watch_and_register(self, schedule: list[ScheduledSession]) -> list[RegistrationResult]:
@@ -484,6 +529,9 @@ class Registrar:
                     still_pending.append(ss)
                     results[ss.session.event_id] = result
 
+                # Write status file for HTML report
+                _write_status_file(results, schedule)
+
                 if still_pending:
                     status_counts = {}
                     for ss in still_pending:
@@ -498,4 +546,6 @@ class Registrar:
 
             await context.close()
 
+        # Write final status
+        _write_status_file(results, schedule)
         return list(results.values())
