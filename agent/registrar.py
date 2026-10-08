@@ -238,12 +238,43 @@ async def _try_register_session(page: Page, session: Session, email: str, passwo
     return RegistrationResult(session=session, status="error", message="register button not found")
 
 
+def _cleanup_stale_chrome_profile():
+    """Clean up stale Chrome processes and lock files (auto-healing)."""
+    import subprocess
+
+    # Check if lock file exists
+    lock_file = _PLAYWRIGHT_CHROME_PROFILE / "SingletonLock"
+    if lock_file.exists():
+        print("[registrar] Detected stale Chrome profile lock - cleaning up...")
+
+        # Kill any stuck Chrome processes using this profile
+        try:
+            subprocess.run(
+                ["pkill", "-9", "-f", str(_PLAYWRIGHT_CHROME_PROFILE)],
+                capture_output=True,
+                timeout=5
+            )
+        except Exception:
+            pass
+
+        # Remove lock files
+        try:
+            lock_file.unlink(missing_ok=True)
+            (lock_file.parent / "SingletonSocket").unlink(missing_ok=True)
+            print("[registrar] Cleaned up stale locks")
+        except Exception as e:
+            print(f"[registrar] Warning: Could not remove locks: {e}")
+
+
 async def _launch_context(pw, headless: bool, email: str, password: str):
     """Launch Chrome with dedicated Playwright profile (persists login across runs)."""
 
     # Use a dedicated profile for Playwright - keeps your main Chrome profile untouched
     playwright_profile = _PLAYWRIGHT_CHROME_PROFILE
     playwright_profile.mkdir(exist_ok=True)
+
+    # Auto-heal: clean up any stale processes/locks before launching
+    _cleanup_stale_chrome_profile()
 
     first_run = not (playwright_profile / "Default").exists()
     if first_run:
