@@ -161,9 +161,18 @@ def notify(openings: list[dict]) -> None:
     ]
     with ALERT_LOG.open("a") as f:
         f.write(f"{datetime.now().astimezone().isoformat()}\n" + "\n".join(f"  {ln}" for ln in lines) + "\n")
-    text = f"{len(openings)} session(s) opened: " + "; ".join(ln[:70] for ln in lines[:3])
-    script = f'display notification {json.dumps(text)} with title "re:Invent seat opened" sound name "Glass"'
+    notify_text(f"{len(openings)} session(s) opened: " + "; ".join(ln[:70] for ln in lines[:3]))
+
+
+def notify_text(text: str, title: str = "re:Invent seats") -> None:
+    script = f'display notification {json.dumps(text)} with title {json.dumps(title)} sound name "Glass"'
     try:
         subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10, check=False)
     except (OSError, subprocess.SubprocessError):
-        pass  # alert log above is the fallback
+        pass  # notification is best-effort; the alert log / status events are the record
+
+
+def add_events(data: dict, prev: dict, texts: list[str]) -> None:
+    """Carry the last 20 activity events forward from the previous snapshot and append new ones."""
+    now = datetime.now().astimezone().isoformat()
+    data["events"] = (prev.get("events") or [])[-20 + len(texts):] + [{"time": now, "text": t} for t in texts]

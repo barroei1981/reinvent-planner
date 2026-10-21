@@ -939,9 +939,12 @@ def register() -> None:
 
 
 @cli.command()
-def seats() -> None:
-    """Show real seat availability / enrollment for schedule.json (API, no browser)."""
-    from agent.seats import fetch_seat_status, find_openings, load_previous, notify, write_status
+@click.option("--auto-reserve", is_flag=True, default=False,
+              help="Reserve planned sessions that just became reservable (never releases existing seats)")
+def seats(auto_reserve: bool) -> None:
+    """Show real seat availability / enrollment for schedule.json (API; browser only with --auto-reserve)."""
+    from agent.registrar import Registrar
+    from agent.seats import add_events, fetch_seat_status, find_openings, load_previous, notify, write_status
 
     config = _load_config()
     api_cfg = config.get("catalog_api", {})
@@ -952,11 +955,21 @@ def seats() -> None:
         ))
     except (RuntimeError, httpx.HTTPError) as exc:
         raise click.ClickException(str(exc))
-    openings = find_openings(load_previous(), data)
+    prev = load_previous()
+    openings = find_openings(prev, data)
+    old = prev.get("sessions", {})
+    newly_enrolled = [
+        v for k, v in data["sessions"].items()
+        if v["status"] == "enrolled" and old.get(k, {}).get("status", "enrolled") != "enrolled"
+    ]
+    add_events(data, prev, [f"Opened: {o['code']} {o['title'][:60]} ({o['seats_remaining']} seats)" for o in openings]
+               + [f"Enrolled: {v['code']} {v['title'][:60]}" for v in newly_enrolled])
     write_status(data)
     if openings:
         notify(openings)
         console.print(f"[bold green]{len(openings)} session(s) just opened — see /tmp/awsevents_alerts.log[/bold green]")
+    if auto_reserve and openings:
+        data = _auto_reserve(config, schedule, openings, data)
 
     table = Table(title=f"Seat status — {data['enrolled_total']} sessions enrolled on your account", box=box.MINIMAL_DOUBLE_HEAD)
     table.add_column("Status", width=14)
@@ -974,6 +987,39 @@ def seats() -> None:
         )
     console.print(table)
     console.print(f"Summary (primary sessions): {data['summary']}")
+
+
+def _auto_reserve(config: dict, schedule: list[ScheduledSession], openings: list[dict], data: dict) -> dict:
+    """Book newly opened planned sessions, then refresh the status file so the dashboard reflects it."""
+    from agent.seats import add_events, fetch_seat_status, notify_text, write_status
+
+    reg_cfg = config.get("registration", {})
+    only = {ss.session.event_id for ss in schedule if ss.session.title in {o["title"] for o in openings}}
+    reg = Registrar(reg_cfg, email=reg_cfg.get("email") or "", password=os.getenv("AWSEVENTS_PASSWORD", ""))
+    try:
+        results = asyncio.run(reg.register_schedule(schedule, only=only))
+    except (RuntimeError, OSError) as exc:
+        console.print(f"[red]auto-reserve failed: {exc}[/red]")
+        notify_text(f"Auto-reserve failed: {str(exc)[:80]}")
+        add_events(data, data, [f"Auto-reserve failed: {str(exc)[:80]}"])
+        write_status(data)
+        return data
+    done = [r for r in results if r.status == "registered"]
+    for r in results:
+        if r.session.event_id in only and r.status != "already_registered":
+            console.print(f"auto-reserve {r.status}: {r.session.title[:70]} {r.message}")
+    notify_text(
+        (f"Reserved {len(done)}: " + "; ".join(r.session.title[:40] for r in done)) if done
+        else "A planned session opened but could not be reserved - check /tmp/awsevents_cron.log"
+    )
+    api = config.get("catalog_api", {})
+    fresh = asyncio.run(fetch_seat_status(schedule, api.get("rf_profile_id", ""), api.get("rf_widget_id", "")))
+    add_events(fresh, data, [
+        f"{'Reserved' if r.status == 'registered' else r.status.upper()}: {r.session.title[:60]} {r.message}".strip()
+        for r in results if r.session.event_id in only and r.status != "already_registered"
+    ])
+    write_status(fresh)
+    return fresh
 
 
 @cli.command()
