@@ -112,6 +112,7 @@ async def fetch_seat_status(
         summary[status] = summary.get(status, 0) + (0 if ss.backup else 1)
         sessions[sid] = {
             "title": ss.session.title,
+            "code": (found.get(sid) or {}).get("code"),
             "status": status,
             "scheduled_start": ss.start.isoformat() if ss.start else "",
             "level": ss.session.learning_level or "Unknown",
