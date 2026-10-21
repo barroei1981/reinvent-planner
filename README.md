@@ -435,7 +435,8 @@ agent/
   scorer.py       — keyword × AOI × level scoring
   llm_scorer.py   — optional Bedrock re-ranking (wraps scorer.py as fallback)
   scheduler.py    — greedy daily optimizer with venue-hop penalty
-  registrar.py    — Playwright auto-registration (primary + backup flow)
+  registrar.py    — Playwright "Reserve a seat" for API-confirmed reservable sessions (verified via /api/myData)
+  seats.py        — API seat status: enrolled / reservable / walk_up / full; `awsevents seats`
   wizard.py       — 7-step interactive setup wizard
   html_views.py   — self-contained HTML view generator (Glass design)
   main.py         — CLI entry point (click) — plan / list / serve / register / watch

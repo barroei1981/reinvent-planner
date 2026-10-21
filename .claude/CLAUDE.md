@@ -18,7 +18,8 @@ and auto-registers for sessions via Playwright once seats open.
 - `agent/catalog.py`    — async catalog fetcher (calls AWS content-directory API)
 - `agent/scorer.py`     — keyword domain scorer + level multiplier
 - `agent/scheduler.py`  — greedy daily schedule optimizer with venue-hop penalty
-- `agent/registrar.py`  — Playwright login + seat auto-registration
+- `agent/seats.py`      — catalog-API seat status (enrolled/reservable/walk_up/full) + opening alerts
+- `agent/registrar.py`  — reserves API-confirmed reservable sessions via Playwright; verifies via /api/myData
 - `agent/main.py`       — CLI: plan / list / register / watch
 - `agent/mcp_server.py` — MCP server (4 tools: list_sessions, plan_schedule, get_schedule, get_config)
 

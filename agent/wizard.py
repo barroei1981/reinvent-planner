@@ -7,17 +7,15 @@ import getpass
 import json
 import os
 import re
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import click
 import yaml
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import box
-from rich.text import Text
 
 console = Console(width=160)
 
@@ -156,7 +154,7 @@ def step_user_details(config: dict) -> dict:
     reg["email"] = email
 
     current_pw = os.getenv("AWSEVENTS_PASSWORD", "")
-    console.print(f"  Password  [dim](stored in .env only — never committed)[/dim]")
+    console.print("  Password  [dim](stored in .env only — never committed)[/dim]")
     if current_pw:
         change = click.confirm("  Password already set in .env. Change it?", default=False)
         if change:
@@ -240,7 +238,7 @@ def step_configure_interests(config: dict) -> dict:
     # Max sessions per day
     current_max = prefs.get("max_sessions_per_day", 6)
     max_per_day = click.prompt(
-        f"  Max sessions per day",
+        "  Max sessions per day",
         default=current_max, type=int,
     )
     prefs["max_sessions_per_day"] = max_per_day
@@ -259,12 +257,12 @@ async def step_fetch_catalog(config: dict) -> list:
     email = reg.get("email", "")
     password = os.getenv("AWSEVENTS_PASSWORD", "")
 
-    from agent.wishlist import sync_wishlist, save_results, load_catalog
     from agent.scorer import Scorer
+    from agent.wishlist import load_catalog, save_results
 
     if _CATALOG_PATH.exists():
         use_cache = click.confirm(
-            f"  reinvent_catalog.json already exists. Use cached catalog?",
+            "  reinvent_catalog.json already exists. Use cached catalog?",
             default=True,
         )
         if use_cache:
@@ -289,7 +287,7 @@ async def step_fetch_catalog(config: dict) -> list:
 
 async def _fetch_fresh(email: str, password: str) -> list:
     from agent.wishlist import sync_wishlist
-    console.print(f"  Fetching from catalog.awsevents.com…")
+    console.print("  Fetching from catalog.awsevents.com…")
     try:
         all_sessions, _ = await sync_wishlist(email, password, headless=True)
         console.print(f"  [green]✓ Fetched {len(all_sessions)} sessions[/green]")
@@ -496,7 +494,7 @@ def step_conflict_resolver(schedule: list[dict]) -> list[dict]:
 def print_schedule(schedule: list[dict], offer_html: bool = True) -> None:
     """Day-by-hour schedule with venue and travel warnings."""
     if offer_html:
-        from agent.html_views import html_schedule, open_in_browser
+        from agent.html_views import html_schedule
         html = html_schedule(schedule)
         _offer_html(html, "step5_schedule.html", "Schedule (visual, day tabs)")
 
@@ -650,9 +648,10 @@ def _ics_escape(text: str) -> str:
 
 def _dicts_to_scheduled(dicts: list[dict]):
     """Convert schedule dicts back to ScheduledSession objects for the registrar."""
+    from datetime import date as dt_date
+
     from agent.catalog import Session as CSession
     from agent.scheduler import ScheduledSession
-    from datetime import date as dt_date
 
     result = []
     for item in dicts:
@@ -753,14 +752,14 @@ def step_export_and_register(schedule_dicts: list[dict], config: dict) -> list[d
         })
 
     Path("registration_results.json").write_text(json.dumps(results, indent=2))
-    console.print(f"  [dim]Registration results saved to registration_results.json[/dim]")
+    console.print("  [dim]Registration results saved to registration_results.json[/dim]")
     return results
 
 
 async def _run_registration(reg, ss_list: list, watch: bool) -> list:
     if watch:
         return await reg.watch_and_register(ss_list)
-    return await reg.register_schedule(ss_list, watch=False)
+    return await reg.register_schedule(ss_list)
 
 
 # ── Step 7: Registration status ────────────────────────────────────────────────
@@ -773,7 +772,7 @@ def step_registration_status(results: list[dict], schedule: list[dict]) -> None:
     ))
 
     registered = [r for r in results if r.get("status") in ("registered", "already_registered")]
-    full_missed = [r for r in results if r.get("status") == "full"]
+    full_missed = [r for r in results if r.get("status") in ("full", "walk_up")]
     not_open    = [r for r in results if r.get("status") == "not_open"]
     errors      = [r for r in results if r.get("status") == "error"]
 
