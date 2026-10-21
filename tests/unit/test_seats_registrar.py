@@ -104,3 +104,22 @@ def test_no_browser_when_nothing_reservable():
     reg = FakeRegistrar([_full({"a": "full"})], ("ok", ""))
     asyncio.run(reg.register_schedule(sched))
     assert reg.booked is None
+
+
+def test_add_events_keeps_last_20_and_appends():
+    from agent.seats import add_events
+
+    prev = {"events": [{"time": "t", "text": f"e{i}"} for i in range(20)]}
+    data = {}
+    add_events(data, prev, ["new1", "new2"])
+    assert len(data["events"]) == 20
+    assert [e["text"] for e in data["events"][-2:]] == ["new1", "new2"]
+    assert data["events"][0]["text"] == "e2"
+
+
+def test_only_restricts_booking_to_given_event_ids():
+    sched = [_ss("a", 8), _ss("b", 9)]
+    snap = _full({"a": "reservable", "b": "reservable"})
+    reg = FakeRegistrar([snap, _full({"a": "enrolled", "b": "reservable"})], ("ok", "reserved"))
+    asyncio.run(reg.register_schedule(sched, only={"a"}))
+    assert reg.booked == [("a", "A")]

@@ -34,7 +34,10 @@
   <div id="meta">loading…</div>
 </header>
 <div id="err"></div>
+<div id="progress" style="padding:0 24px 8px"></div>
 <div id="cards"></div>
+<h2 id="evh" style="margin:0 24px 8px;font-size:14px;color:var(--mut)">Recent activity</h2>
+<ul id="events" style="margin:0 24px 20px;padding-left:18px;font-size:13px"></ul>
 <table>
   <thead><tr><th>When</th><th>Session</th><th>Level</th><th>Seats</th><th>Status</th></tr></thead>
   <tbody id="rows"></tbody>
@@ -55,7 +58,13 @@ async function refresh() {
     el("err").textContent = "";
     const age = Math.round((Date.now() - new Date(d.last_check)) / 60000);
     el("meta").textContent = `last check ${new Date(d.last_check).toLocaleString()} (${age} min ago) · ${d.enrolled_total} enrolled on account · page refreshes every 30s`;
+    el("events").innerHTML = (d.events || []).slice().reverse().map(e =>
+      `<li><span style="color:var(--mut)">${esc(new Date(e.time).toLocaleString())}</span> — ${esc(e.text)}</li>`).join("") || "<li style='color:var(--mut)'>none yet</li>";
     const s = Object.values(d.sessions).sort((a, b) => a.scheduled_start.localeCompare(b.scheduled_start));
+    const planned = s.filter(x => !x.backup), secured = planned.filter(x => x.status === "enrolled").length;
+    const pct = Math.round(100 * secured / Math.max(planned.length, 1));
+    el("progress").innerHTML = `<div style="font-size:13px;margin-bottom:6px"><b>${secured}</b> of ${planned.length} planned sessions secured (${pct}%)</div>
+      <div style="background:var(--line);border-radius:99px;height:8px"><div style="width:${pct}%;background:#4ade80;height:8px;border-radius:99px"></div></div>`;
     const count = k => s.filter(x => x.status === k && !x.backup).length;
     el("cards").innerHTML = ["enrolled", "reservable", "walk_up", "waitlist_open", "full", "unknown"]
       .map(k => `<div class="card"><b>${count(k)}</b><span>${LABEL[k]}</span></div>`).join("");
