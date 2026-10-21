@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import click
+import httpx
 import yaml
 from dotenv import load_dotenv
 from rich.console import Console
@@ -933,6 +934,44 @@ def serve(port: int, no_open: bool) -> None:
 def register() -> None:
     """Register for sessions from saved schedule.json immediately."""
     _do_register(watch=False)
+
+
+@cli.command()
+def seats() -> None:
+    """Show real seat availability / enrollment for schedule.json (API, no browser)."""
+    from agent.seats import fetch_seat_status, find_openings, load_previous, notify, write_status
+
+    config = _load_config()
+    api_cfg = config.get("catalog_api", {})
+    schedule = _load_schedule(config)
+    try:
+        data = asyncio.run(fetch_seat_status(
+            schedule, api_cfg.get("rf_profile_id", ""), api_cfg.get("rf_widget_id", "")
+        ))
+    except (RuntimeError, httpx.HTTPError) as exc:
+        raise click.ClickException(str(exc))
+    openings = find_openings(load_previous(), data)
+    write_status(data)
+    if openings:
+        notify(openings)
+        console.print(f"[bold green]{len(openings)} session(s) just opened — see /tmp/awsevents_alerts.log[/bold green]")
+
+    table = Table(title=f"Seat status — {data['enrolled_total']} sessions enrolled on your account", box=box.MINIMAL_DOUBLE_HEAD)
+    table.add_column("Status", width=14)
+    table.add_column("Seats", width=9, justify="right")
+    table.add_column("When", width=12)
+    table.add_column("Session")
+    colours = {"enrolled": "green", "reservable": "cyan", "walk_up": "magenta", "waitlist_open": "yellow", "full": "red", "unknown": "dim"}
+    for s in sorted(data["sessions"].values(), key=lambda x: (x["status"] != "reservable", x["scheduled_start"])):
+        seats_txt = "" if s["seats_remaining"] is None else f"{s['seats_remaining']}/{s['capacity']}"
+        table.add_row(
+            f"[{colours.get(s['status'], 'white')}]{s['status']}[/]",
+            seats_txt,
+            s["scheduled_start"][5:16].replace("T", " "),
+            s["title"][:70] + (" (backup)" if s["backup"] else ""),
+        )
+    console.print(table)
+    console.print(f"Summary (primary sessions): {data['summary']}")
 
 
 @cli.command()

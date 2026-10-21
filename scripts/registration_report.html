@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>re:Invent 2026 — Registration Monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0f1117; --card:#181b24; --fg:#e6e8ee; --mut:#8b90a0; --line:#262a36; }
+  body { margin:0; font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
+  h1 { font-size:18px; margin:0; }
+  #meta { color:var(--mut); font-size:12px; }
+  #cards { display:flex; gap:12px; padding:16px 24px; flex-wrap:wrap; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 18px; min-width:130px; }
+  .card b { display:block; font-size:26px; }
+  .card span { color:var(--mut); font-size:12px; }
+  table { width:calc(100% - 48px); margin:0 24px 32px; border-collapse:collapse; background:var(--card); border-radius:10px; overflow:hidden; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:600; font-size:12px; text-transform:uppercase; }
+  .badge { padding:2px 8px; border-radius:99px; font-size:12px; font-weight:600; white-space:nowrap; }
+  .enrolled { background:#12361f; color:#4ade80; }
+  .reservable { background:#10303a; color:#22d3ee; }
+  .walk_up { background:#2d1b3a; color:#d8b4fe; }
+  .waitlist_open { background:#3a2b0b; color:#fbbf24; }
+  .full { background:#2a2d36; color:#9ca3af; }
+  .unknown { background:#2a2d36; color:#9ca3af; }
+  .lvl-Expert, .lvl-Distinguished { color:#f87171; } .lvl-Advanced { color:#fb923c; } .lvl-Intermediate { color:#60a5fa; }
+  #err { color:#f87171; padding:0 24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>re:Invent 2026 — Registration Monitor</h1>
+  <div id="meta">loading…</div>
+</header>
+<div id="err"></div>
+<div id="cards"></div>
+<table>
+  <thead><tr><th>When</th><th>Session</th><th>Level</th><th>Seats</th><th>Status</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<script>
+const LABEL = {
+  enrolled: "Enrolled", reservable: "Reservable", walk_up: "Walk-up only", waitlist_open: "Waitlist open",
+  full: "No seats", unknown: "Not in catalog",
+};
+const el = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function refresh() {
+  try {
+    const r = await fetch("awsevents_seats.json?t=" + Date.now(), {cache: "no-store"});
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    el("err").textContent = "";
+    const age = Math.round((Date.now() - new Date(d.last_check)) / 60000);
+    el("meta").textContent = `last check ${new Date(d.last_check).toLocaleString()} (${age} min ago) · ${d.enrolled_total} enrolled on account · page refreshes every 30s`;
+    const s = Object.values(d.sessions).sort((a, b) => a.scheduled_start.localeCompare(b.scheduled_start));
+    const count = k => s.filter(x => x.status === k && !x.backup).length;
+    el("cards").innerHTML = ["enrolled", "reservable", "walk_up", "waitlist_open", "full", "unknown"]
+      .map(k => `<div class="card"><b>${count(k)}</b><span>${LABEL[k]}</span></div>`).join("");
+    el("rows").innerHTML = s.map(x => `<tr>
+      <td>${esc(x.scheduled_start.replace("T", " ").slice(0, 16))}</td>
+      <td>${esc(x.title)}</td>
+      <td class="lvl-${esc(x.level)}">${esc(x.level)}</td>
+      <td>${x.seats_remaining == null ? "" : esc(x.seats_remaining + "/" + x.capacity)}</td>
+      <td><span class="badge ${esc(x.status)}">${esc(LABEL[x.status] || x.status)}</span>${x.backup ? " (backup)" : ""}</td></tr>`).join("");
+  } catch (e) {
+    el("err").textContent = "Failed to load awsevents_seats.json: " + e.message;
+  }
+}
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
