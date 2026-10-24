@@ -123,3 +123,34 @@ def test_only_restricts_booking_to_given_event_ids():
     reg = FakeRegistrar([snap, _full({"a": "enrolled", "b": "reservable"})], ("ok", "reserved"))
     asyncio.run(reg.register_schedule(sched, only={"a"}))
     assert reg.booked == [("a", "A")]
+
+
+def test_platform_compat_paths_and_locks(monkeypatch, tmp_path):
+    from agent import platform_compat as pc
+
+    monkeypatch.setattr(pc, "IS_WINDOWS", False)
+    monkeypatch.setattr(pc, "IS_MACOS", True)
+    assert str(pc.tmp_dir()) == "/tmp"
+    assert pc.chrome_profile1_cookies().as_posix().endswith("Library/Application Support/Google/Chrome/Profile 1/Cookies")
+    assert [p.name for p in pc.profile_lock_files(tmp_path)] == ["SingletonLock", "SingletonSocket", "SingletonCookie"]
+
+    monkeypatch.setattr(pc, "IS_WINDOWS", True)
+    monkeypatch.setattr(pc, "IS_MACOS", False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    (tmp_path / "Google/Chrome/User Data/Profile 1/Network").mkdir(parents=True)
+    (tmp_path / "Google/Chrome/User Data/Profile 1/Network/Cookies").write_text("x")
+    assert pc.chrome_profile1_cookies().as_posix().endswith("Profile 1/Network/Cookies")
+    assert [p.name for p in pc.profile_lock_files(tmp_path)] == ["lockfile"]
+
+
+def test_notify_text_never_raises_and_uses_platform_command(monkeypatch):
+    from agent import platform_compat as pc
+
+    calls = []
+    monkeypatch.setattr(pc.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    monkeypatch.setattr(pc.subprocess, "Popen", lambda cmd, **k: calls.append(cmd))
+    monkeypatch.setattr(pc, "IS_MACOS", True); monkeypatch.setattr(pc, "IS_WINDOWS", False)
+    pc.notify_text("it's open")
+    monkeypatch.setattr(pc, "IS_MACOS", False); monkeypatch.setattr(pc, "IS_WINDOWS", True)
+    pc.notify_text("it's open")
+    assert calls[0][0] == "osascript" and calls[1][0] == "powershell" and "it''s open" in calls[1][-1]

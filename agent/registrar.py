@@ -18,6 +18,7 @@ from pathlib import Path
 
 import yaml
 
+from agent.platform_compat import kill_processes_using, profile_lock_files
 from agent.scheduler import ScheduledSession
 from agent.seats import fetch_seat_status
 
@@ -57,16 +58,16 @@ def _api_cfg() -> dict:
 
 def _cleanup_stale_chrome_profile() -> None:
     """Kill leftover Chrome processes and remove lock files for our dedicated profile."""
-    lock = _PLAYWRIGHT_CHROME_PROFILE / "SingletonLock"
-    if not (lock.exists() or lock.is_symlink()):
+    locks = profile_lock_files(_PLAYWRIGHT_CHROME_PROFILE)
+    if not any(lk.exists() or lk.is_symlink() for lk in locks):
         return
     print("[registrar] Stale Chrome profile lock found - cleaning up...")
     try:
-        subprocess.run(["pkill", "-9", "-f", str(_PLAYWRIGHT_CHROME_PROFILE)], capture_output=True, timeout=5, check=False)
+        kill_processes_using(_PLAYWRIGHT_CHROME_PROFILE)
     except (OSError, subprocess.SubprocessError) as exc:
-        print(f"[registrar] pkill failed: {exc}")
-    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-        (_PLAYWRIGHT_CHROME_PROFILE / name).unlink(missing_ok=True)
+        print(f"[registrar] stale-process kill failed: {exc}")
+    for lk in locks:
+        lk.unlink(missing_ok=True)
 
 
 async def _ensure_logged_in(page: Page, email: str, password: str) -> None:

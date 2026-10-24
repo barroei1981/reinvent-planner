@@ -24,6 +24,8 @@ from dataclasses import asdict, dataclass, replace as dc_replace
 from pathlib import Path
 from typing import Optional
 
+from agent.platform_compat import chrome_profile1_cookies, chrome_user_data_dir
+
 try:
     from playwright.async_api import async_playwright, Page, BrowserContext, Locator
     _PLAYWRIGHT_AVAILABLE = True
@@ -53,9 +55,7 @@ _RF_API_HEADERS_BASE = {
 
 def _rf_headers(profile_id: str, widget_id: str) -> dict:
     return {**_RF_API_HEADERS_BASE, "rfapiprofileid": profile_id, "rfwidgetid": widget_id}
-_CHROME_PROFILE_1_COOKIES = (
-    Path.home() / "Library/Application Support/Google/Chrome/Profile 1/Cookies"
-)
+_CHROME_PROFILE_1_COOKIES = chrome_profile1_cookies()
 _LOGIN_URLS = [
     "https://registration.awsevents.com/",
     "https://builder.aws.com",
@@ -695,7 +695,7 @@ def _normalise_raw(raw: dict) -> Optional[ReinventSession]:
     )
 
 
-_CHROME_USER_DATA_DIR = Path.home() / "Library/Application Support/Google/Chrome"
+_CHROME_USER_DATA_DIR = chrome_user_data_dir()
 
 
 async def sync_wishlist(

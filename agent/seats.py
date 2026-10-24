@@ -10,18 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import urlencode
 
 import httpx
 
+from agent.platform_compat import notify_text, tmp_dir
 from agent.scheduler import ScheduledSession
 from agent.wishlist import _CATALOG_API_BASE, _load_chrome_profile1_cookies, _rf_headers
 
-STATUS_PATH = Path("/tmp/awsevents_seats.json")
-ALERT_LOG = Path("/tmp/awsevents_alerts.log")
+STATUS_PATH = tmp_dir() / "awsevents_seats.json"
+ALERT_LOG = tmp_dir() / "awsevents_alerts.log"
 _ALERT_STATUSES = {"reservable", "waitlist_open"}
 _PAGE_SIZE = 50
 _MAX_ATTEMPTS = 3
@@ -162,14 +161,6 @@ def notify(openings: list[dict]) -> None:
     with ALERT_LOG.open("a") as f:
         f.write(f"{datetime.now().astimezone().isoformat()}\n" + "\n".join(f"  {ln}" for ln in lines) + "\n")
     notify_text(f"{len(openings)} session(s) opened: " + "; ".join(ln[:70] for ln in lines[:3]))
-
-
-def notify_text(text: str, title: str = "re:Invent seats") -> None:
-    script = f'display notification {json.dumps(text)} with title {json.dumps(title)} sound name "Glass"'
-    try:
-        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
-        pass  # notification is best-effort; the alert log / status events are the record
 
 
 def add_events(data: dict, prev: dict, texts: list[str]) -> None:
