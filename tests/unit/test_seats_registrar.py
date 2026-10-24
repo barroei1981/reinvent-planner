@@ -130,7 +130,7 @@ def test_platform_compat_paths_and_locks(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pc, "IS_WINDOWS", False)
     monkeypatch.setattr(pc, "IS_MACOS", True)
-    assert str(pc.tmp_dir()) == "/tmp"
+    assert pc.tmp_dir().as_posix() == "/tmp"
     assert pc.chrome_profile1_cookies().as_posix().endswith("Library/Application Support/Google/Chrome/Profile 1/Cookies")
     assert [p.name for p in pc.profile_lock_files(tmp_path)] == ["SingletonLock", "SingletonSocket", "SingletonCookie"]
 
