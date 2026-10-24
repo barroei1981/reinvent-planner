@@ -149,8 +149,46 @@ def test_notify_text_never_raises_and_uses_platform_command(monkeypatch):
     calls = []
     monkeypatch.setattr(pc.subprocess, "run", lambda cmd, **k: calls.append(cmd))
     monkeypatch.setattr(pc.subprocess, "Popen", lambda cmd, **k: calls.append(cmd))
-    monkeypatch.setattr(pc, "IS_MACOS", True); monkeypatch.setattr(pc, "IS_WINDOWS", False)
+    monkeypatch.setattr(pc, "IS_MACOS", True)
+    monkeypatch.setattr(pc, "IS_WINDOWS", False)
     pc.notify_text("it's open")
-    monkeypatch.setattr(pc, "IS_MACOS", False); monkeypatch.setattr(pc, "IS_WINDOWS", True)
+    monkeypatch.setattr(pc, "IS_MACOS", False)
+    monkeypatch.setattr(pc, "IS_WINDOWS", True)
     pc.notify_text("it's open")
     assert calls[0][0] == "osascript" and calls[1][0] == "powershell" and "it''s open" in calls[1][-1]
+
+
+def test_auto_reserve_runs_registrar_and_refreshes_status(monkeypatch):
+    """Regression: _auto_reserve used Registrar without importing it (NameError on the first real opening)."""
+    from types import SimpleNamespace
+
+    import agent.main as main_mod
+    import agent.registrar as registrar_mod
+    import agent.seats as seats_mod
+    from agent.registrar import RegistrationResult
+
+    sess = SimpleNamespace(event_id="e1", title="Opened session")
+    ss = SimpleNamespace(session=sess, backup=False)
+    calls = {}
+
+    class FakeRegistrar:
+        def __init__(self, cfg, email, password):
+            calls["init"] = (email, password)
+
+        async def register_schedule(self, schedule, only=None):
+            calls["only"] = only
+            return [RegistrationResult(session=sess, status="registered", message="ok")]
+
+    async def fake_fetch(schedule, profile_id, widget_id):
+        return {"sessions": {}, "events": []}
+
+    monkeypatch.setattr(registrar_mod, "Registrar", FakeRegistrar)
+    monkeypatch.setattr(seats_mod, "fetch_seat_status", fake_fetch)
+    monkeypatch.setattr(seats_mod, "write_status", lambda d: calls.setdefault("written", d))
+    monkeypatch.setattr(seats_mod, "notify_text", lambda *a, **k: calls.setdefault("notified", a))
+
+    fresh = main_mod._auto_reserve({"registration": {"email": "a@b.c"}}, [ss], [{"title": "Opened session"}], {"events": []})
+
+    assert calls["only"] == {"e1"}
+    assert calls["written"] is fresh
+    assert "Reserved 1" in calls["notified"][0]
