@@ -50,14 +50,14 @@ def notify_text(text: str, title: str = "re:Invent seats") -> None:
             f"$n.Visible = $true; $n.ShowBalloonTip(10000, '{esc(title)}', '{esc(text)}', 'Info'); "
             "Start-Sleep -Seconds 11; $n.Dispose()"
         )
-        cmd = ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps]
+        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps]
     else:
         return
     try:
         if IS_WINDOWS:
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # balloon needs ~11s; don't block
+            subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # balloon needs ~11s; don't block
         else:
-            subprocess.run(cmd, capture_output=True, timeout=10, check=False)
+            subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=10, check=False)
     except (OSError, subprocess.SubprocessError):
         pass
 
@@ -71,11 +71,11 @@ def kill_processes_using(profile_dir: Path) -> None:
     """Kill leftover processes whose command line mentions the profile dir."""
     if IS_WINDOWS:
         ps = (
-            "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*"
+            "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*"
             + str(profile_dir).replace("'", "''")
             + "*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
-        )
-        cmd = ["powershell", "-NoProfile", "-Command", ps]
+        )  # -ne $PID: this command line contains the path too, so it must not match itself
+        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]
     else:
         cmd = ["pkill", "-9", "-f", str(profile_dir)]
-    subprocess.run(cmd, capture_output=True, timeout=15, check=False)
+    subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=60, check=False)  # PowerShell cold start can take 30s+ in slow/emulated VMs

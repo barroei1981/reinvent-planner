@@ -6,4 +6,5 @@ if ((Test-Path $Log) -and ((Get-Item $Log).Length -gt 5MB)) {
     Move-Item -Force $Log "$Log.1"
 }
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-uv run awsevents seats --auto-reserve *>> $Log
+# ToString() unwraps stderr ErrorRecords so the log shows plain text, not NativeCommandError noise
+uv run awsevents seats --auto-reserve 2>&1 | ForEach-Object { $_.ToString() } | Out-File -Append -Encoding utf8 $Log
