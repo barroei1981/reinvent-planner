@@ -229,3 +229,33 @@ def test_email_comes_from_env_and_is_not_written_back(monkeypatch, tmp_path):
     assert loaded["registration"]["email"] == "me@example.com"
     wiz._save_config(loaded)
     assert "me@example.com" not in cfg.read_text()
+
+
+def test_cookie_file_fallback_precedence_expiry_and_privacy(monkeypatch, tmp_path):
+    """Chrome's DB is unreadable on Windows (v20 encryption) -> `awsevents login` cookie file is used instead."""
+    import json
+
+    import agent.wishlist as w
+
+    f = tmp_path / "cookies.json"
+    now = 1_000_000.0
+    records = [
+        {"name": "JSESSIONID", "value": "reg", "domain": "registration.awsevents.com", "expires": now + 100},
+        {"name": "JSESSIONID", "value": "catalog", "domain": "catalog.awsevents.com", "expires": -1},
+        {"name": "rfjwt", "value": "tok", "domain": ".awsevents.com", "expires": now + 100},
+        {"name": "old", "value": "x", "domain": ".awsevents.com", "expires": now - 5},
+        {"name": "other", "value": "x", "domain": "example.com", "expires": -1},
+    ]
+    assert w._save_cookie_file(records, f) == 4  # example.com dropped
+    cookies, jwt = w._load_cookie_file(f, now)
+    assert cookies == {"JSESSIONID": "catalog", "rfjwt": "tok"}  # catalog wins; expired + foreign skipped
+    assert jwt == "tok"
+    assert w._load_cookie_file(tmp_path / "missing.json") == ({}, "")
+    f.write_text("not json")
+    assert w._load_cookie_file(f) == ({}, "")
+
+    # the real loader falls back to the file when Chrome yields nothing
+    f.write_text(json.dumps([{"name": "rfjwt", "value": "t2", "domain": ".awsevents.com", "expires": -1}]))
+    monkeypatch.setattr(w, "_CHROME_PROFILE_1_COOKIES", tmp_path / "no_such_cookies_db")
+    monkeypatch.setattr(w, "cookie_file", lambda: f)
+    assert w._load_chrome_profile1_cookies() == ({"rfjwt": "t2"}, "t2")

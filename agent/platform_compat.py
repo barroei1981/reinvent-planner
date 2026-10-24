@@ -29,6 +29,11 @@ def chrome_user_data_dir() -> Path:
     return Path.home() / ".config/google-chrome"
 
 
+def cookie_file() -> Path:
+    """Session cookies saved by `awsevents login` - the fallback when Chrome's own cookie DB can't be read."""
+    return Path.home() / ".awsevents_cookies.json"
+
+
 def chrome_profile1_cookies() -> Path:
     profile = chrome_user_data_dir() / "Profile 1"
     if IS_WINDOWS and (profile / "Network/Cookies").exists():

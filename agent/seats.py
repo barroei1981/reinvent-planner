@@ -86,7 +86,7 @@ async def fetch_seat_status(
     async with httpx.AsyncClient(cookies=cookies, headers=headers, timeout=30) as client:
         my = await _post(client, "/api/myData")
         if "mySchedule" not in my:
-            raise RuntimeError("not authenticated: /api/myData has no mySchedule (log in to Chrome Profile 1)")
+            raise RuntimeError("not authenticated: /api/myData has no mySchedule (log in to Chrome Profile 1, or run: awsevents login)")
         enrolled_ids = {
             t.get("sessionID") for m in my["mySchedule"] for t in m.get("times", [])
         } | {m.get("sessionID") for m in my["mySchedule"]}
@@ -152,7 +152,7 @@ def notify_auth_expired(now: datetime | None = None) -> bool:
             return False
     except (OSError, ValueError, KeyError):
         pass
-    text = "Login expired - sign in to catalog.awsevents.com in Chrome Profile 1"
+    text = "Login expired - sign in to catalog.awsevents.com in Chrome Profile 1, or run: awsevents login"
     notify_text(text)
     with ALERT_LOG.open("a") as f:
         f.write(f"{now.isoformat()}\n  {text}\n")

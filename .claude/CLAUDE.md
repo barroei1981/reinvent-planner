@@ -29,6 +29,7 @@ uv run awsevents plan          # fetch → score → schedule → save schedule.
 uv run awsevents list          # show all matching sessions with scores
 uv run awsevents register      # register from schedule.json immediately
 uv run awsevents watch         # poll until sessions open, then auto-register
+uv run awsevents login         # sign in once; saves cookies to ~/.awsevents_cookies.json (fallback for the seat check, needed on Windows)
 uv run awsevents-mcp           # start MCP server (stdio, for Claude Desktop / Cursor / etc.)
 ```
 
