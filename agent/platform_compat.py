@@ -41,7 +41,9 @@ def notify_text(text: str, title: str = "re:Invent seats") -> None:
     if IS_MACOS:
         cmd = ["osascript", "-e", f'display notification {json.dumps(text)} with title {json.dumps(title)} sound name "Glass"']
     elif IS_WINDOWS:
-        esc = lambda s: s.replace("'", "''")
+        def esc(s: str) -> str:
+            return s.replace("'", "''")
+
         ps = (
             "Add-Type -AssemblyName System.Windows.Forms; "
             "$n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information; "

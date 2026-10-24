@@ -535,7 +535,8 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
 
             # Interactive controls (only when served from the local web server)
             if interactive_port and not is_keynote:
-                _q = lambda v: v.replace("'", "\\'")
+                def _q(v):
+                    return v.replace("'", "\\'")
 
                 # Check if there's a backup at this slot
                 slot_info = slot_map.get(slot_key, {})

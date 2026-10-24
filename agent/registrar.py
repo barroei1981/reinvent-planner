@@ -18,6 +18,7 @@ from pathlib import Path
 
 import yaml
 
+from agent.catalog import Session
 from agent.platform_compat import kill_processes_using, profile_lock_files
 from agent.scheduler import ScheduledSession
 from agent.seats import fetch_seat_status
@@ -44,7 +45,7 @@ _FINAL = ("registered", "already_registered", "walk_up", "conflict")
 
 @dataclass
 class RegistrationResult:
-    session: object
+    session: Session
     status: str  # registered | already_registered | full | walk_up | conflict | unknown | error
     message: str = ""
 
