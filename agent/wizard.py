@@ -115,11 +115,17 @@ def _multiselect(options: list[str], prompt: str, current: list[str] | None = No
 def _load_config() -> dict:
     if _CONFIG_PATH.exists():
         with open(_CONFIG_PATH) as f:
-            return yaml.safe_load(f) or {}
-    return {}
+            config = yaml.safe_load(f) or {}
+    else:
+        config = {}
+    if os.getenv("AWSEVENTS_EMAIL"):  # account email lives in .env, not the repo
+        config.setdefault("registration", {})["email"] = os.environ["AWSEVENTS_EMAIL"]
+    return config
 
 
 def _save_config(config: dict) -> None:
+    if os.getenv("AWSEVENTS_EMAIL") and config.get("registration", {}).get("email") == os.environ["AWSEVENTS_EMAIL"]:
+        config = {**config, "registration": {**config["registration"], "email": ""}}  # don't write it back to the repo
     with open(_CONFIG_PATH, "w") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

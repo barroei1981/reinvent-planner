@@ -343,7 +343,10 @@ def _load_config() -> dict:
     if not _CONFIG_PATH.exists():
         raise click.ClickException("config.yaml not found — copy from config.yaml.example and fill in your preferences")
     with open(_CONFIG_PATH) as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    if os.getenv("AWSEVENTS_EMAIL"):  # keep the account email out of the (public) repo
+        config.setdefault("registration", {})["email"] = os.environ["AWSEVENTS_EMAIL"]
+    return config
 
 
 def _sessions_to_dict(schedule: list[ScheduledSession]) -> list[dict]:
@@ -945,8 +948,10 @@ def seats(auto_reserve: bool) -> None:
         add_events,
         fetch_seat_status,
         find_openings,
+        clear_auth_alert,
         load_previous,
         notify,
+        notify_auth_expired,
         write_status,
     )
 
@@ -958,7 +963,10 @@ def seats(auto_reserve: bool) -> None:
             schedule, api_cfg.get("rf_profile_id", ""), api_cfg.get("rf_widget_id", "")
         ))
     except (RuntimeError, httpx.HTTPError) as exc:
+        if str(exc).startswith("not authenticated"):
+            notify_auth_expired()
         raise click.ClickException(str(exc))
+    clear_auth_alert()
     prev = load_previous()
     openings = find_openings(prev, data)
     old = prev.get("sessions", {})

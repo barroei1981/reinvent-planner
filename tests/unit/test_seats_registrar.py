@@ -192,3 +192,40 @@ def test_auto_reserve_runs_registrar_and_refreshes_status(monkeypatch):
     assert calls["only"] == {"e1"}
     assert calls["written"] is fresh
     assert "Reserved 1" in calls["notified"][0]
+
+
+def test_auth_expiry_alert_is_rate_limited_and_rearms(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    import agent.seats as seats_mod
+
+    monkeypatch.setattr(seats_mod, "AUTH_ALERT_STATE", tmp_path / "auth.json")
+    monkeypatch.setattr(seats_mod, "ALERT_LOG", tmp_path / "alerts.log")
+    monkeypatch.setattr(seats_mod, "STATUS_PATH", tmp_path / "seats.json")
+    sent = []
+    monkeypatch.setattr(seats_mod, "notify_text", lambda text, *a, **k: sent.append(text))
+    t0 = datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc)
+
+    assert seats_mod.notify_auth_expired(t0) is True
+    assert seats_mod.notify_auth_expired(t0 + timedelta(hours=1)) is False  # inside cooldown
+    assert seats_mod.notify_auth_expired(t0 + timedelta(hours=7)) is True  # cooldown elapsed
+    seats_mod.clear_auth_alert()
+    assert seats_mod.notify_auth_expired(t0 + timedelta(hours=7, minutes=1)) is True  # re-armed after recovery
+    assert len(sent) == 3 and "Chrome Profile 1" in sent[0]
+
+
+def test_email_comes_from_env_and_is_not_written_back(monkeypatch, tmp_path):
+    import agent.main as main_mod
+    import agent.wizard as wiz
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("registration:\n  enabled: true\n  email: ''\n")
+    monkeypatch.setattr(main_mod, "_CONFIG_PATH", cfg)
+    monkeypatch.setattr(wiz, "_CONFIG_PATH", cfg)
+    monkeypatch.setenv("AWSEVENTS_EMAIL", "me@example.com")
+
+    assert main_mod._load_config()["registration"]["email"] == "me@example.com"
+    loaded = wiz._load_config()
+    assert loaded["registration"]["email"] == "me@example.com"
+    wiz._save_config(loaded)
+    assert "me@example.com" not in cfg.read_text()
