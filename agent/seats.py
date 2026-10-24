@@ -21,6 +21,8 @@ from agent.wishlist import _CATALOG_API_BASE, _load_chrome_profile1_cookies, _rf
 
 STATUS_PATH = tmp_dir() / "awsevents_seats.json"
 ALERT_LOG = tmp_dir() / "awsevents_alerts.log"
+AUTH_ALERT_STATE = tmp_dir() / "awsevents_auth_alert.json"
+_AUTH_ALERT_COOLDOWN_S = 6 * 3600
 _ALERT_STATUSES = {"reservable", "waitlist_open"}
 _PAGE_SIZE = 50
 _MAX_ATTEMPTS = 3
@@ -139,6 +141,32 @@ def load_previous() -> dict:
         return json.loads(STATUS_PATH.read_text())
     except (OSError, ValueError):
         return {}
+
+
+def notify_auth_expired(now: datetime | None = None) -> bool:
+    """Tell the user the Chrome Profile 1 login expired - once per cooldown, not every 10-minute run."""
+    now = now or datetime.now().astimezone()
+    try:
+        last = datetime.fromisoformat(json.loads(AUTH_ALERT_STATE.read_text())["time"])
+        if (now - last).total_seconds() < _AUTH_ALERT_COOLDOWN_S:
+            return False
+    except (OSError, ValueError, KeyError):
+        pass
+    text = "Login expired - sign in to catalog.awsevents.com in Chrome Profile 1"
+    notify_text(text)
+    with ALERT_LOG.open("a") as f:
+        f.write(f"{now.isoformat()}\n  {text}\n")
+    prev = load_previous()
+    if prev:
+        add_events(prev, prev, [text])
+        write_status(prev)
+    AUTH_ALERT_STATE.write_text(json.dumps({"time": now.isoformat()}))
+    return True
+
+
+def clear_auth_alert() -> None:
+    """Login works again - re-arm so the next expiry alerts immediately."""
+    AUTH_ALERT_STATE.unlink(missing_ok=True)
 
 
 def find_openings(prev: dict, new: dict) -> list[dict]:

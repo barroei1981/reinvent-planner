@@ -62,6 +62,8 @@ async function refresh() {
     const s = Object.values(d.sessions).sort((a, b) => a.scheduled_start.localeCompare(b.scheduled_start));
     const planned = s.filter(x => !x.backup), secured = planned.filter(x => x.status === "enrolled").length;
     el("meta").textContent = `last check ${new Date(d.last_check).toLocaleString()} (${age} min ago) · ${secured} of ${planned.length} planned enrolled · ${d.enrolled_total} total on account · page refreshes every 30s`;
+    el("meta").style.color = age > 30 ? "#ff6b6b" : "";
+    if (age > 30) el("meta").textContent += " · STALE: checks are failing - see activity feed / log in to Chrome Profile 1";
     const pct = Math.round(100 * secured / Math.max(planned.length, 1));
     el("progress").innerHTML = `<div style="font-size:13px;margin-bottom:6px"><b>${secured}</b> of ${planned.length} planned sessions secured (${pct}%)</div>
       <div style="background:var(--line);border-radius:99px;height:8px"><div style="width:${pct}%;background:#4ade80;height:8px;border-radius:99px"></div></div>`;
