@@ -20,21 +20,21 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import asdict, dataclass, replace as dc_replace
+from dataclasses import asdict, dataclass
+from dataclasses import replace as dc_replace
 from pathlib import Path
-from typing import Optional
 
 from agent.platform_compat import chrome_profile1_cookies, chrome_user_data_dir
 
 try:
-    from playwright.async_api import async_playwright, Page, BrowserContext, Locator
+    from playwright.async_api import BrowserContext, Page, async_playwright
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     _PLAYWRIGHT_AVAILABLE = False
 
 try:
-    import httpx as _httpx
     import browser_cookie3 as _bc3
+    import httpx as _httpx
     _API_AVAILABLE = True
 except ImportError:
     _API_AVAILABLE = False
@@ -70,19 +70,19 @@ class ReinventSession:
     session_id: str
     title: str
     description: str
-    date: Optional[str]
-    time: Optional[str]
-    venue: Optional[str]
-    room: Optional[str]
-    level: Optional[str]
-    session_type: Optional[str]
+    date: str | None
+    time: str | None
+    venue: str | None
+    room: str | None
+    level: str | None
+    session_type: str | None
     topics: list[str]
     areas_of_interest: list[str]
     roles: list[str]
     speakers: list[str]
     is_wishlisted: bool
-    capacity: Optional[str]
-    registration_url: Optional[str]
+    capacity: str | None
+    registration_url: str | None
 
 
 async def _wait_for_login(page: Page, email: str, password: str) -> bool:
@@ -142,7 +142,7 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
             continue
 
     # ── Step 5: wait for catalog URL — prompt for manual completion ───────
-    catalog_pattern = re.compile(r"(reinvent2026|eventCatalog|event-catalog|dashboard|myagenda)", re.I)
+    catalog_pattern = re.compile(r"(reinvent2026|eventCatalog|event-catalog|dashboard|myagenda)", re.IGNORECASE)
 
     # Quick check — did automated login succeed?
     try:
@@ -422,7 +422,7 @@ def _load_chrome_profile1_cookies() -> tuple[dict[str, str], str]:
     return cookies, rfjwt
 
 
-def _normalise_api_item(item: dict) -> Optional[ReinventSession]:
+def _normalise_api_item(item: dict) -> ReinventSession | None:
     """Map a catalog.awsevents.com API item to ReinventSession."""
     title = (item.get("title") or "").strip()
     if not title:
@@ -442,34 +442,32 @@ def _normalise_api_item(item: dict) -> Optional[ReinventSession]:
 
     # Level: API returns "200 – Intermediate" or "300 – Advanced"
     level_raw = (attrs.get("Level") or [""])[0]
-    level: Optional[str] = None
+    level: str | None = None
     if "–" in level_raw:
         level = level_raw.split("–")[-1].strip()
     elif level_raw:
         level = level_raw.strip()
 
     # Session type: prefer the "Type" attributevalue; fall back to item.type
-    session_type: Optional[str] = (attrs.get("Type") or [item.get("type") or ""])[0] or None
+    session_type: str | None = (attrs.get("Type") or [item.get("type") or ""])[0] or None
 
     # Schedule from the first time slot
     times = item.get("times", [])
-    date: Optional[str] = None
-    time_str: Optional[str] = None
-    room: Optional[str] = None
-    capacity: Optional[str] = None
-    end_time: Optional[str] = None
+    date: str | None = None
+    time_str: str | None = None
+    room: str | None = None
+    capacity: str | None = None
     if times:
         t = times[0]
         date = t.get("date")
         time_str = t.get("startTime") or t.get("time")
-        end_time = t.get("endTime")
         room = t.get("room")
         cap = t.get("capacity")
         capacity = str(cap) if cap is not None else None
 
     # Venue: prefer dedicated Venue attributevalue, then parse from room
     venue_list = attrs.get("Venue", [])
-    venue: Optional[str] = venue_list[0] if venue_list else None
+    venue: str | None = venue_list[0] if venue_list else None
     if not venue and room:
         venue = room.split("|")[0].strip()
 
@@ -620,7 +618,7 @@ async def _fetch_catalog_via_api(rf_profile_id: str, rf_widget_id: str) -> tuple
     return all_sessions, wishlisted
 
 
-def _normalise_raw(raw: dict) -> Optional[ReinventSession]:
+def _normalise_raw(raw: dict) -> ReinventSession | None:
     """Map a raw scraped dict (DOM or API) to ReinventSession."""
     title = raw.get("title") or raw.get("name") or raw.get("sessionName") or raw.get("sessionTitle")
     if not title or not isinstance(title, str) or not title.strip():
@@ -728,14 +726,14 @@ async def sync_wishlist(
     seen_ids: set[str] = set()
 
     async with async_playwright() as pw:
-        context: Optional[BrowserContext] = None
-        page: Optional[Page] = None
+        context: BrowserContext | None = None
+        page: Page | None = None
 
         # ── Strategy 1: use existing Chrome profile (auto-login) ──────────
         chrome_profile = _CHROME_USER_DATA_DIR
         if chrome_profile.exists():
             try:
-                print(f"[wishlist] Launching Chrome with your existing profile (auto-login)...")
+                print("[wishlist] Launching Chrome with your existing profile (auto-login)...")
                 context = await pw.chromium.launch_persistent_context(
                     user_data_dir=str(chrome_profile),
                     channel="chrome",
@@ -744,7 +742,7 @@ async def sync_wishlist(
                     args=["--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble"],
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
-                print(f"[wishlist] Chrome launched — navigating to catalog...")
+                print("[wishlist] Chrome launched — navigating to catalog...")
             except Exception as exc:
                 print(f"[wishlist] Chrome profile launch failed ({exc}), falling back to Chromium + credentials...")
                 context = None
@@ -762,6 +760,7 @@ async def sync_wishlist(
             )
             page = await context.new_page()
 
+        assert page is not None  # every branch above assigns it; narrows for the type checker
         print(f"[wishlist] Opening catalog: {_CATALOG_URL}")
         await page.goto(_CATALOG_URL, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_load_state("networkidle")
@@ -779,7 +778,7 @@ async def sync_wishlist(
         # Handle login redirect (only needed if auto-login didn't work)
         current = page.url.lower()
         if any(kw in current for kw in ["sign-in", "login", "auth", "sso", "identity", "signin"]):
-            print(f"[wishlist] Not logged in — filling credentials...")
+            print("[wishlist] Not logged in — filling credentials...")
             logged_in = await _wait_for_login(page, email, password)
             if not logged_in:
                 print("[wishlist] WARNING: Could not confirm login. Continuing anyway...")
@@ -794,7 +793,7 @@ async def sync_wishlist(
                 await context.close()
                 raise RuntimeError("CATALOG_NOT_OPEN: re:Invent 2026 catalog not published yet.")
         else:
-            print(f"[wishlist] Already logged in via Chrome profile ✓")
+            print("[wishlist] Already logged in via Chrome profile ✓")
 
         # Try network intercept first (cleaner data)
         print("[wishlist] Attempting network intercept for session data...")

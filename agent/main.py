@@ -99,7 +99,7 @@ def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> list[d
                 replacements.append((slot, e, n))
         elif n:
             additions.append((slot, n))
-        else:
+        elif e:
             drops.append((slot, e))
 
     if not replacements and not additions and not drops:
@@ -112,7 +112,7 @@ def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> list[d
         final.sort(key=lambda s: (s.get("start_date", ""), s.get("scheduled_start", "")))
         return final
 
-    final: list[dict] = [s for _, s in unchanged]
+    final = [s for _, s in unchanged]
 
     def _venue(s: dict) -> str:
         return (s.get("location") or "—").split("|")[0].strip()[:22]
@@ -221,7 +221,7 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> l
                 replacements.append((slot, e, n))
         elif n:
             additions.append((slot, n))
-        else:
+        elif e:
             drops.append((slot, e))
 
     if not replacements and not additions and not drops:
@@ -236,7 +236,7 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> l
     try:
         import uvicorn
         from starlette.applications import Starlette
-        from starlette.responses import HTMLResponse, JSONResponse
+        from starlette.responses import HTMLResponse
         from starlette.routing import Route
     except ImportError:
         console.print("[yellow]starlette/uvicorn not installed — using terminal approval gate[/yellow]")
@@ -262,7 +262,7 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> l
         add_choices = {a["slot"]: a.get("include", True) for a in body.get("additions", [])}
         drop_choices = {d["slot"]: d.get("keep", True) for d in body.get("drops", [])}
 
-        final: list[dict] = [s for _, s in unchanged]
+        final = [s for _, s in unchanged]
 
         for slot, curr, new in replacements:
             choice = rep_choices.get(slot, "1")
@@ -687,9 +687,6 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
         schedule = json.load(f)
 
     config = _load_config()
-    prefs = config.get("preferences", {})
-    target_aoi = set(prefs.get("areas_of_interest", []))
-    target_topics = set(prefs.get("topic_tracks", []))
 
     from datetime import datetime, timedelta
 
@@ -943,8 +940,15 @@ def register() -> None:
               help="Reserve planned sessions that just became reservable (never releases existing seats)")
 def seats(auto_reserve: bool) -> None:
     """Show real seat availability / enrollment for schedule.json (API; browser only with --auto-reserve)."""
-    from agent.registrar import Registrar
-    from agent.seats import ALERT_LOG, add_events, fetch_seat_status, find_openings, load_previous, notify, write_status
+    from agent.seats import (
+        ALERT_LOG,
+        add_events,
+        fetch_seat_status,
+        find_openings,
+        load_previous,
+        notify,
+        write_status,
+    )
 
     config = _load_config()
     api_cfg = config.get("catalog_api", {})
@@ -991,6 +995,7 @@ def seats(auto_reserve: bool) -> None:
 
 def _auto_reserve(config: dict, schedule: list[ScheduledSession], openings: list[dict], data: dict) -> dict:
     """Book newly opened planned sessions, then refresh the status file so the dashboard reflects it."""
+    from agent.registrar import Registrar
     from agent.seats import add_events, fetch_seat_status, notify_text, write_status
 
     reg_cfg = config.get("registration", {})
