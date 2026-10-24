@@ -426,6 +426,34 @@ def cli() -> None:
 
 # ── sync-wishlist ─────────────────────────────────────────────────────────────
 
+@cli.command()
+def login() -> None:
+    """Log in once in a Chrome window and save the session for the seat check (needed on Windows)."""
+    from agent.platform_compat import cookie_file
+    from agent.registrar import _PLAYWRIGHT_CHROME_PROFILE
+    from agent.seats import clear_auth_alert, fetch_seat_status
+    from agent.wishlist import login_and_save_cookies
+
+    def _wait() -> None:
+        input("Sign in to AWS Events in the Chrome window, then press Enter here... ")
+
+    try:
+        saved = asyncio.run(login_and_save_cookies(_PLAYWRIGHT_CHROME_PROFILE, _wait))
+    except (RuntimeError, OSError, asyncio.TimeoutError) as exc:
+        raise click.ClickException(f"login failed: {exc}")
+    console.print(f"Saved {saved} cookies to {cookie_file()}")
+    config = _load_config()
+    api_cfg = config.get("catalog_api", {})
+    try:
+        data = asyncio.run(fetch_seat_status(
+            _load_schedule(config), api_cfg.get("rf_profile_id", ""), api_cfg.get("rf_widget_id", "")
+        ))
+    except (RuntimeError, httpx.HTTPError) as exc:
+        raise click.ClickException(f"cookies saved, but the seat API still rejects them: {exc}")
+    clear_auth_alert()
+    console.print(f"[green]Logged in - {data['enrolled_total']} sessions on your account.[/green]")
+
+
 @cli.command("sync-wishlist")
 @click.option("--headless", is_flag=True, default=False, help="Run browser in headless mode (no visible window)")
 def sync_wishlist_cmd(headless: bool) -> None:
