@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass
 from dataclasses import replace as dc_replace
 from pathlib import Path
 
-from agent.platform_compat import chrome_profile1_cookies, chrome_user_data_dir
+from agent.platform_compat import chrome_profile1_cookies, chrome_user_data_dir, cookie_file
 
 try:
     from playwright.async_api import BrowserContext, Page, async_playwright
@@ -404,22 +404,81 @@ def _load_chrome_profile1_cookies() -> tuple[dict[str, str], str]:
     Returns (cookies_dict, rfjwt_token).
     Loads in priority order: catalog.awsevents.com JSESSIONID takes precedence.
     """
-    if not _API_AVAILABLE:
-        return {}, ""
-    if not _CHROME_PROFILE_1_COOKIES.exists():
-        return {}, ""
     cookies: dict[str, str] = {}
     rfjwt = ""
-    # Load lower-priority first; higher-priority domains overwrite duplicates
-    for domain in ["registration.awsevents.com", ".awsevents.com", "catalog.awsevents.com"]:
+    if _API_AVAILABLE and _CHROME_PROFILE_1_COOKIES.exists():
+        # Load lower-priority first; higher-priority domains overwrite duplicates
+        for domain in ["registration.awsevents.com", ".awsevents.com", "catalog.awsevents.com"]:
+            try:
+                for c in _bc3.chrome(cookie_file=str(_CHROME_PROFILE_1_COOKIES), domain_name=domain):
+                    cookies[c.name] = c.value
+                    if c.name == "rfjwt":
+                        rfjwt = c.value
+            except Exception:
+                pass  # unreadable DB / undecryptable value (e.g. Windows Chrome v20) -> fall back to the cookie file
+    return (cookies, rfjwt) if cookies else _load_cookie_file()
+
+
+_COOKIE_DOMAIN_PRIORITY = {"registration.awsevents.com": 0, "catalog.awsevents.com": 2}
+
+
+def _load_cookie_file(path: Path | None = None, now: float | None = None) -> tuple[dict[str, str], str]:
+    """Cookies saved by `awsevents login`, same precedence as the Chrome loader; expired entries skipped."""
+    import time
+
+    try:
+        records = json.loads((path or cookie_file()).read_text())
+    except (OSError, ValueError):
+        return {}, ""
+    now = time.time() if now is None else now
+    live = [
+        r for r in records
+        if isinstance(r, dict) and "awsevents.com" in str(r.get("domain", "")) and r.get("name")
+        and not (r.get("expires", -1) and 0 < r["expires"] < now)
+    ]
+    cookies: dict[str, str] = {}
+    for r in sorted(live, key=lambda r: _COOKIE_DOMAIN_PRIORITY.get(str(r["domain"]), 1)):
+        cookies[r["name"]] = str(r.get("value", ""))
+    return cookies, cookies.get("rfjwt", "")
+
+
+def _save_cookie_file(records: list[dict], path: Path | None = None) -> int:
+    """Write the awsevents.com cookies (session tokens - keep them private) and return how many were kept."""
+    import os
+
+    path = path or cookie_file()
+    keep = [r for r in records if "awsevents.com" in str(r.get("domain", ""))]
+    path.write_text(json.dumps(keep))
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass  # Windows: the user-profile ACL already restricts it
+    return len(keep)
+
+
+async def login_and_save_cookies(
+    profile_dir: Path, wait_for_user, timeout_s: int = 60, headless: bool = False
+) -> int:
+    """Open a real Chrome window on a dedicated profile, let the user log in, then save the decrypted
+    session cookies. Needed where Chrome's cookie DB can't be read (Windows app-bound encryption)."""
+    if not _PLAYWRIGHT_AVAILABLE:
+        raise RuntimeError("playwright not installed - run: uv add playwright && playwright install chromium")
+    profile_dir.mkdir(exist_ok=True)
+    async with async_playwright() as pw:
+        ctx = await asyncio.wait_for(
+            pw.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir), channel="chrome", headless=headless,
+                viewport={"width": 1280, "height": 900}, args=["--no-first-run", "--no-default-browser-check"],
+            ),
+            timeout=timeout_s,
+        )
         try:
-            for c in _bc3.chrome(cookie_file=str(_CHROME_PROFILE_1_COOKIES), domain_name=domain):
-                cookies[c.name] = c.value
-                if c.name == "rfjwt":
-                    rfjwt = c.value
-        except Exception:
-            pass
-    return cookies, rfjwt
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await page.goto(_CATALOG_URL, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+            await asyncio.to_thread(wait_for_user)
+            return _save_cookie_file(await ctx.cookies())
+        finally:
+            await ctx.close()
 
 
 def _normalise_api_item(item: dict) -> ReinventSession | None:

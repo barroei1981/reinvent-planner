@@ -59,6 +59,7 @@ echo "AWSEVENTS_PASSWORD=your_password_here" > .env
 uv run awsevents sync-wishlist   # scrape catalog + wishlist (requires Chrome)
 uv run awsevents plan            # score → schedule → save schedule.json
 uv run awsevents watch           # poll until sessions open → auto-register
+uv run awsevents login           # Windows: sign in once, saves the session for the seat check (Chrome 127+ blocks reading its cookie DB)
 ```
 
 ---
