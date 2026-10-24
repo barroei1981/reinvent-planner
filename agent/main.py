@@ -944,7 +944,7 @@ def register() -> None:
 def seats(auto_reserve: bool) -> None:
     """Show real seat availability / enrollment for schedule.json (API; browser only with --auto-reserve)."""
     from agent.registrar import Registrar
-    from agent.seats import add_events, fetch_seat_status, find_openings, load_previous, notify, write_status
+    from agent.seats import ALERT_LOG, add_events, fetch_seat_status, find_openings, load_previous, notify, write_status
 
     config = _load_config()
     api_cfg = config.get("catalog_api", {})
@@ -967,7 +967,7 @@ def seats(auto_reserve: bool) -> None:
     write_status(data)
     if openings:
         notify(openings)
-        console.print(f"[bold green]{len(openings)} session(s) just opened — see /tmp/awsevents_alerts.log[/bold green]")
+        console.print(f"[bold green]{len(openings)} session(s) just opened — see {ALERT_LOG}[/bold green]")
     if auto_reserve and openings:
         data = _auto_reserve(config, schedule, openings, data)
 
@@ -1010,7 +1010,7 @@ def _auto_reserve(config: dict, schedule: list[ScheduledSession], openings: list
             console.print(f"auto-reserve {r.status}: {r.session.title[:70]} {r.message}")
     notify_text(
         (f"Reserved {len(done)}: " + "; ".join(r.session.title[:40] for r in done)) if done
-        else "A planned session opened but could not be reserved - check /tmp/awsevents_cron.log"
+        else "A planned session opened but could not be reserved - check awsevents_cron.log in the temp dir (/tmp on macOS)"
     )
     api = config.get("catalog_api", {})
     fresh = asyncio.run(fetch_seat_status(schedule, api.get("rf_profile_id", ""), api.get("rf_widget_id", "")))
