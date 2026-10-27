@@ -1,4 +1,4 @@
-# Seat check + auto-reserve. Windows equivalent of ~/bin/awsevents_seats.sh (log rotates at 5 MB).
+# Seat check + auto-reserve. Windows equivalent of scripts/macos/run-seats.sh (log rotates at 5 MB).
 $ErrorActionPreference = "Continue"
 $Log = Join-Path $env:TEMP "awsevents_cron.log"
 if ((Test-Path $Log) -and ((Get-Item $Log).Length -gt 5MB)) {

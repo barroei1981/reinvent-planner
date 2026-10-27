@@ -12,7 +12,7 @@ then normalised to [0, 1].
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, Union
+from typing import Any
 
 from agent.catalog import Session
 
@@ -72,7 +72,7 @@ class Scorer:
         self._topic_tracks: set[str] = set(preferences.get("topic_tracks", []))
         self._areas_of_interest: set[str] = set(preferences.get("areas_of_interest", []))
         self._roles: set[str] = set(preferences.get("roles", []))
-        self._session_types: set[str] = set(t.lower() for t in preferences.get("session_types", []))
+        self._session_types: set[str] = {t.lower() for t in preferences.get("session_types", [])}
 
     def _domain_score_text(self, text: str) -> float:
         total = 0.0
@@ -93,9 +93,8 @@ class Scorer:
                 score += 5.0
             # partial match against known track keyword groups
             for track_name, kws in _REINVENT_TRACKS.items():
-                if track_name in self._topic_tracks:
-                    if any(kw in t.lower() for kw in kws):
-                        score += 3.0
+                if track_name in self._topic_tracks and any(kw in t.lower() for kw in kws):
+                    score += 3.0
         return score
 
     def _aoi_score(self, areas: list[str]) -> float:

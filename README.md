@@ -304,12 +304,13 @@ chmod +x ~/bin/awsevents_check.sh
 ### Start HTTP server for live dashboard
 
 ```bash
-cd /tmp
-python3 -m http.server 8000 &
+# macOS: install the seat check (every 10 min) and the dashboard server as launchd agents
+scripts/macos/install.sh          # remove with --remove
 
-# Open dashboard
 open http://localhost:8000/registration_report.html
 ```
+
+(Manual alternative: `cd /tmp && python3 -m http.server 8000 &` after copying `scripts/registration_report.html` there.)
 
 ### Dashboard features
 

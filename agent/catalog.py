@@ -6,11 +6,10 @@ so the rest of the agent doesn't depend on that package.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -55,15 +54,15 @@ class Session:
     title: str
     description: str
     start_date: date
-    start_time: Optional[str]
-    time_zone: Optional[str]
-    location: Optional[str]
+    start_time: str | None
+    time_zone: str | None
+    location: str | None
     location_mode: str          # "physical" | "virtual"
-    learning_level: Optional[str]
-    event_type: Optional[str]
-    partner_name: Optional[str]
-    registration_url: Optional[str]
-    learn_more_url: Optional[str]
+    learning_level: str | None
+    event_type: str | None
+    partner_name: str | None
+    registration_url: str | None
+    learn_more_url: str | None
 
     # Computed at fetch time; not part of equality
     score: float = field(default=0.0, compare=False, hash=False)
@@ -84,7 +83,7 @@ class Session:
         return datetime.combine(self.start_date, datetime.min.time().replace(hour=default_hour))
 
 
-def _parse_date(raw: Any) -> Optional[date]:
+def _parse_date(raw: Any) -> date | None:
     if not isinstance(raw, str):
         return None
     for fmt in ("%Y-%m-%d", "%B %d, %Y", "%b %d, %Y", "%m/%d/%Y"):
@@ -110,7 +109,7 @@ def _derive_location_mode(tags: list[dict]) -> str:
     return "physical"
 
 
-def _derive_event_type(tags: list[dict]) -> Optional[str]:
+def _derive_event_type(tags: list[dict]) -> str | None:
     for tag in tags:
         if not isinstance(tag, dict):
             continue
@@ -122,14 +121,14 @@ def _derive_event_type(tags: list[dict]) -> Optional[str]:
     return None
 
 
-def _normalize_level(raw: Any) -> Optional[str]:
+def _normalize_level(raw: Any) -> str | None:
     if not isinstance(raw, str):
         return None
     key = re.sub(r"[^a-z0-9]", "", raw.lower())
     return _LEVEL_MAP.get(key)
 
 
-def _parse_record(record: dict) -> Optional[Session]:
+def _parse_record(record: dict) -> Session | None:
     fields = record.get("additionalFields", {})
     if not isinstance(fields, dict):
         fields = {}
@@ -199,12 +198,12 @@ def _parse_record(record: dict) -> Optional[Session]:
 
 async def fetch_sessions(
     *,
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
-    location_text: Optional[str] = None,
-    location_mode: Optional[str] = None,
-    event_type: Optional[str] = None,
-    learning_levels: Optional[list[str]] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    location_text: str | None = None,
+    location_mode: str | None = None,
+    event_type: str | None = None,
+    learning_levels: list[str] | None = None,
 ) -> list[Session]:
     """Fetch all matching sessions from the AWS Events content-directory API."""
     headers = {
