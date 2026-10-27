@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from datetime import date
 from pathlib import Path
@@ -47,6 +48,8 @@ def _make_scorer(config: dict):
 
 load_dotenv()
 console = Console(width=160)
+
+logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path("config.yaml")
 _SCHEDULE_PATH = Path("schedule.json")
@@ -294,9 +297,7 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> l
 
         final.sort(key=lambda s: (s.get("start_date", ""), s.get("scheduled_start", "")))
 
-        import json as _json
-        with open(_SCHEDULE_PATH, "w") as f:
-            _json.dump(final, f, indent=2)
+        _SCHEDULE_PATH.write_text(json.dumps(final, indent=2))
 
         _choices["final"] = final
         _done.set()
@@ -582,7 +583,7 @@ def plan(min_score: float, day: str | None, all_events: bool, with_html: bool) -
 
         wishlisted_in_schedule = sum(1 for ss in schedule if ss.session.score == 1.0)
         console.print(f"[bold green]Schedule built:[/bold green] {len(schedule)} sessions across "
-                      f"{len(set(ss.day for ss in schedule))} days  "
+                      f"{len({ss.day for ss in schedule})} days  "
                       f"([green]★ {wishlisted_in_schedule} wishlisted[/green])\n")
 
         _print_schedule(schedule)
@@ -591,8 +592,7 @@ def plan(min_score: float, day: str | None, all_events: bool, with_html: bool) -
 
         # ── Approval gate: per-slot interactive review ─────────────────────────
         if _SCHEDULE_PATH.exists():
-            with open(_SCHEDULE_PATH) as f:
-                existing = json.load(f)
+            existing = json.loads(_SCHEDULE_PATH.read_text())
             if with_html:
                 result = _run_html_approval_gate(existing, new_sessions)
             else:
@@ -603,8 +603,7 @@ def plan(min_score: float, day: str | None, all_events: bool, with_html: bool) -
             new_sessions = result
         # No existing schedule — first run, save directly
 
-        with open(_SCHEDULE_PATH, "w") as f:
-            json.dump(new_sessions, f, indent=2)
+        _SCHEDULE_PATH.write_text(json.dumps(new_sessions, indent=2))
         console.print(f"\n[dim]Schedule saved to {_SCHEDULE_PATH}[/dim]")
 
     asyncio.run(_run())
@@ -725,7 +724,7 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
     from agent.wizard import _DAY_NAMES
 
     # Pick day
-    days = sorted(set(s.get("start_date", "") for s in schedule if s.get("start_date")))
+    days = sorted({s.get("start_date", "") for s in schedule if s.get("start_date")})
     if not day:
         console.print("\n[bold]Days in your schedule:[/bold]")
         for i, d in enumerate(days, 1):
@@ -770,7 +769,7 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
     try:
         slot_start = datetime.fromisoformat(target_session["scheduled_start"])
         slot_end   = datetime.fromisoformat(target_session["scheduled_end"])
-    except Exception:
+    except (KeyError, ValueError, TypeError):
         console.print("[red]Cannot parse session times[/red]")
         return
 
@@ -798,7 +797,7 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
             return False
         try:
             cand_start = datetime.strptime(f"{day}T{cand_start_str}", "%Y-%m-%dT%H:%M")
-        except Exception:
+        except ValueError:
             return False
         dur = 60
         stype = (candidate.event_type or "").lower()
@@ -811,8 +810,8 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
                 o_end   = datetime.fromisoformat(other["scheduled_end"])
                 if max(cand_start, o_start) < min(cand_end, o_end):
                     return True
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError):
+                logger.debug("skipping %r: bad schedule times", other.get("title"), exc_info=True)
         return False
 
     conf_days = {"2026-11-30","2026-12-01","2026-12-02","2026-12-03","2026-12-04","2026-12-05"}
@@ -893,7 +892,7 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
             # Build replacement entry
             try:
                 new_start = datetime.strptime(f"{day}T{new_session.start_time}", "%Y-%m-%dT%H:%M")
-            except Exception:
+            except ValueError:
                 new_start = slot_start
             dur_min = 120 if "workshop" in (new_session.event_type or "").lower() else 60
             new_end = new_start + timedelta(minutes=dur_min)
@@ -974,9 +973,9 @@ def seats(auto_reserve: bool) -> None:
     from agent.seats import (
         ALERT_LOG,
         add_events,
+        clear_auth_alert,
         fetch_seat_status,
         find_openings,
-        clear_auth_alert,
         load_previous,
         notify,
         notify_auth_expired,
