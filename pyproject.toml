@@ -36,8 +36,17 @@ packages = ["agent"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# _lch/ is the LCH harness runtime, installed and refreshed by the harness, not project code.
+extend-exclude = ["_lch"]
 
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+]
+
+[tool.ruff.lint]
+ignore = [
+    # Event times from the AWS catalog are naive local Las Vegas times, compared only with each
+    # other. Attaching a timezone would break those comparisons.
+    "DTZ007",
 ]

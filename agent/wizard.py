@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import getpass
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -16,6 +17,8 @@ from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+
+logger = logging.getLogger(__name__)
 
 console = Console(width=160)
 
@@ -349,8 +352,8 @@ def step_recommendations_review(scored_sessions: list) -> set[str]:
                     excl_file.unlink(missing_ok=True)
                     return excluded
                 excluded.clear()
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError):
+            logger.debug("could not read saved exclusions from %s", excl_file, exc_info=True)
 
     page_size = 10
     i = 0
@@ -426,7 +429,7 @@ def step_conflict_resolver(schedule: list[dict]) -> list[dict]:
         by_day.setdefault(s.get("start_date", ""), []).append(s)
 
     conflicts: list[tuple[dict, dict]] = []
-    for day, sessions in by_day.items():
+    for sessions in by_day.values():
         ordered = sorted(sessions, key=lambda x: x.get("scheduled_start") or "")
         for j in range(len(ordered) - 1):
             a = ordered[j]
@@ -516,7 +519,7 @@ def print_schedule(schedule: list[dict], offer_html: bool = True) -> None:
     for day, sessions in sorted(by_day.items()):
         day_label = _DAY_NAMES.get(day, day)
         total = len(sessions)
-        clusters = set(_venue_cluster(s.get("location")) for s in sessions if _venue_cluster(s.get("location")))
+        clusters = {_venue_cluster(s.get("location")) for s in sessions if _venue_cluster(s.get("location"))}
         cluster_labels = " → ".join(_CLUSTER_LABELS[c] for c in sorted(clusters) if c > 0)
         console.print(f"\n[bold reverse] {day_label}  —  {total} sessions  {cluster_labels} [/bold reverse]")
         console.print()
@@ -539,11 +542,11 @@ def print_schedule(schedule: list[dict], offer_html: bool = True) -> None:
             se = s.get("scheduled_end")
             try:
                 start_dt = datetime.fromisoformat(ss) if ss else None
-            except Exception:
+            except (ValueError, TypeError):
                 start_dt = None
             try:
                 end_dt = datetime.fromisoformat(se) if se else None
-            except Exception:
+            except (ValueError, TypeError):
                 end_dt = None
 
             start_str = start_dt.strftime("%H:%M") if start_dt else (s.get("start_time") or "?")[:5]
@@ -612,7 +615,8 @@ def export_ics(schedule: list[dict], path: Path) -> None:
         try:
             start_dt = datetime.fromisoformat(ss)
             end_dt = datetime.fromisoformat(se) if se else start_dt + timedelta(hours=1)
-        except Exception:
+        except (ValueError, TypeError):
+            logger.debug("skipping %r: bad start/end time", s.get("title"), exc_info=True)
             continue
 
         dtstart = start_dt.strftime("%Y%m%dT%H%M%S")
@@ -663,7 +667,7 @@ def _dicts_to_scheduled(dicts: list[dict]):
     for item in dicts:
         try:
             start_date = dt_date.fromisoformat(item["start_date"]) if item.get("start_date") else dt_date(2026, 11, 30)
-        except Exception:
+        except (ValueError, TypeError):
             start_date = dt_date(2026, 11, 30)
         s = CSession(
             event_id=item["event_id"],
@@ -684,7 +688,8 @@ def _dicts_to_scheduled(dicts: list[dict]):
         try:
             start_dt = datetime.fromisoformat(item["scheduled_start"])
             end_dt = datetime.fromisoformat(item["scheduled_end"])
-        except Exception:
+        except (KeyError, ValueError, TypeError):
+            logger.debug("skipping %r: bad schedule times", item.get("title"), exc_info=True)
             continue
         result.append(ScheduledSession(session=s, day=item.get("start_date", ""), start=start_dt, end=end_dt))
     return result
@@ -825,7 +830,7 @@ def _print_gaps(schedule: list[dict], registered_ids: set[str]) -> None:
             try:
                 s_dt = datetime.fromisoformat(s["scheduled_start"]) if s.get("scheduled_start") else None
                 e_dt = datetime.fromisoformat(s["scheduled_end"]) if s.get("scheduled_end") else None
-            except Exception:
+            except (ValueError, TypeError):
                 s_dt = e_dt = None
             if prev_end and s_dt and s_dt > prev_end:
                 gap = int((s_dt - prev_end).total_seconds() / 60)
@@ -876,7 +881,7 @@ def run_wizard() -> None:
     keynotes = _load_keynotes()
     schedule_dicts = _scheduled_to_dicts(scheduled) + keynotes
     schedule_dicts.sort(key=lambda x: (x.get("start_date", ""), x.get("scheduled_start") or ""))
-    console.print(f"  [green]✓ {len(scheduled)} sessions scheduled across {len(set(ss.day for ss in scheduled))} days[/green]")
+    console.print(f"  [green]✓ {len(scheduled)} sessions scheduled across {len({ss.day for ss in scheduled})} days[/green]")
 
     # Step 4: conflict resolver
     schedule_dicts = step_conflict_resolver(schedule_dicts)

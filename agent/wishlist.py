@@ -19,25 +19,42 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+import sqlite3
 from dataclasses import asdict, dataclass
 from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from agent.platform_compat import chrome_profile1_cookies, chrome_user_data_dir, cookie_file
 
+logger = logging.getLogger(__name__)
+
 try:
     from playwright.async_api import BrowserContext, Page, async_playwright
+    from playwright.async_api import Error as PlaywrightError
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     _PLAYWRIGHT_AVAILABLE = False
+
+    class PlaywrightError(Exception):  # type: ignore[no-redef]
+        """Placeholder so `except PlaywrightError` resolves when playwright is not installed."""
 
 try:
     import browser_cookie3 as _bc3
     import httpx as _httpx
     _API_AVAILABLE = True
+    # unreadable cookie DB / undecryptable value (e.g. Windows Chrome v20)
+    _COOKIE_ERRORS: tuple[type[Exception], ...] = (
+        OSError, sqlite3.Error, ValueError, RuntimeError, _bc3.BrowserCookieError,
+    )
+    _API_ERRORS: tuple[type[Exception], ...] = (
+        _httpx.HTTPError, KeyError, TypeError, *_COOKIE_ERRORS,
+    )
 except ImportError:
     _API_AVAILABLE = False
+    _COOKIE_ERRORS = (RuntimeError,)
+    _API_ERRORS = (RuntimeError,)
 
 # re:Invent 2026 catalog URL (Playwright fallback)
 _CATALOG_URL = "https://registration.awsevents.com/flow/awsevents/reinvent2026/event-catalog/page/eventCatalog"
@@ -103,7 +120,7 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
         await continue_btn.click()
         await page.wait_for_load_state("networkidle")
         print("[wishlist] Email submitted")
-    except Exception as exc:
+    except PlaywrightError as exc:
         print(f"[wishlist] WARNING: email step failed: {exc}")
 
     # ── Step 2: password ──────────────────────────────────────────────────
@@ -117,7 +134,7 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
         await sign_in_btn.click()
         await page.wait_for_load_state("networkidle")
         print("[wishlist] Password submitted")
-    except Exception as exc:
+    except PlaywrightError as exc:
         print(f"[wishlist] WARNING: password step failed: {exc}")
 
     # ── Step 3: MFA / TOTP ────────────────────────────────────────────────
@@ -128,8 +145,8 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
         ).first
         if await mfa_input.is_visible(timeout=4000):
             print("[wishlist] ⚠  MFA required — enter your code in the browser window")
-    except Exception:
-        pass
+    except PlaywrightError:
+        logger.debug("MFA prompt not detected", exc_info=True)
 
     # ── Step 4: post-login consent / terms ───────────────────────────────
     for btn_text in ["Accept", "I Accept", "I Agree", "Agree", "Continue", "OK"]:
@@ -138,7 +155,8 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
             if await btn.is_visible(timeout=2000):
                 await btn.click()
                 await page.wait_for_load_state("networkidle")
-        except Exception:
+        except PlaywrightError:
+            logger.debug("consent button %r not usable", btn_text, exc_info=True)
             continue
 
     # ── Step 5: wait for catalog URL — prompt for manual completion ───────
@@ -148,8 +166,8 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
     try:
         await page.wait_for_url(catalog_pattern, timeout=8000)
         return True
-    except Exception:
-        pass
+    except PlaywrightError:
+        logger.debug("automated login not confirmed within 8s", exc_info=True)
 
     # Automated login likely failed (ERR-837, corporate SSO, CAPTCHA).
     # Give the user time to complete login manually in the browser window.
@@ -165,8 +183,8 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
         try:
             await page.wait_for_url(catalog_pattern, timeout=300_000)
             return True
-        except Exception:
-            pass
+        except PlaywrightError:
+            logger.debug("manual login not completed within 5 minutes", exc_info=True)
 
     current_url = page.url.lower()
     return "signin.aws" not in current_url and "login" not in current_url
@@ -346,8 +364,8 @@ async def _scrape_via_network_intercept(page: Page) -> list[dict]:
                                 break
                     if items:
                         captured.extend(items)
-            except Exception:
-                pass
+            except (PlaywrightError, ValueError, TypeError):
+                logger.debug("could not parse response from %s", url, exc_info=True)
 
     page.on("response", handle_response)
     # Trigger a reload to capture the initial data load
@@ -372,7 +390,8 @@ async def _get_total_pages(page: Page) -> int:
             }
         """)
         return max(1, int(result))
-    except Exception:
+    except (PlaywrightError, ValueError, TypeError):
+        logger.debug("could not read page count", exc_info=True)
         return 1
 
 
@@ -393,7 +412,8 @@ async def _click_next_page(page: Page) -> bool:
                 await page.wait_for_load_state("networkidle")
                 await asyncio.sleep(0.8)
                 return True
-        except Exception:
+        except PlaywrightError:
+            logger.debug("next-page selector %r not usable", selector, exc_info=True)
             continue
     return False
 
@@ -414,8 +434,9 @@ def _load_chrome_profile1_cookies() -> tuple[dict[str, str], str]:
                     cookies[c.name] = c.value
                     if c.name == "rfjwt":
                         rfjwt = c.value
-            except Exception:
-                pass  # unreadable DB / undecryptable value (e.g. Windows Chrome v20) -> fall back to the cookie file
+            except _COOKIE_ERRORS:
+                # unreadable DB / undecryptable value (e.g. Windows Chrome v20) -> fall back to the cookie file
+                logger.debug("could not read %s cookies from Chrome", domain, exc_info=True)
     return (cookies, rfjwt) if cookies else _load_cookie_file()
 
 
@@ -775,7 +796,7 @@ async def sync_wishlist(
     if _API_AVAILABLE:
         try:
             return await _fetch_catalog_via_api(rf_profile_id, rf_widget_id)
-        except Exception as exc:
+        except _API_ERRORS as exc:
             print(f"[wishlist] API fetch failed ({exc}) — falling back to browser")
 
     if not _PLAYWRIGHT_AVAILABLE:
@@ -802,7 +823,7 @@ async def sync_wishlist(
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
                 print("[wishlist] Chrome launched — navigating to catalog...")
-            except Exception as exc:
+            except (PlaywrightError, OSError) as exc:
                 print(f"[wishlist] Chrome profile launch failed ({exc}), falling back to Chromium + credentials...")
                 context = None
                 page = None
@@ -844,8 +865,8 @@ async def sync_wishlist(
             # Navigate to catalog after login
             try:
                 await page.goto(_CATALOG_URL, wait_until="networkidle", timeout=30000)
-            except Exception:
-                pass
+            except PlaywrightError:
+                logger.debug("catalog navigation after login did not settle", exc_info=True)
             # Re-check for not-open
             body_text = (await page.inner_text("body")).strip().lower()
             if "event was not defined" in body_text:
@@ -915,7 +936,8 @@ async def sync_wishlist(
                 if wl_sessions:
                     print(f"[wishlist]   Found {len(wl_sessions)} sessions in {wishlist_url_fragment} view")
                     break
-            except Exception:
+            except (PlaywrightError, KeyError, ValueError, TypeError):
+                logger.debug("no sessions at %s", wishlist_url, exc_info=True)
                 continue
 
         await context.close()

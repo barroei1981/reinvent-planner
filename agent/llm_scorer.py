@@ -24,6 +24,14 @@ from agent.scorer import Scorer
 
 logger = logging.getLogger(__name__)
 
+try:
+    from botocore.exceptions import BotoCoreError, ClientError
+    _LLM_ERRORS: tuple[type[Exception], ...] = (
+        BotoCoreError, ClientError, ValueError, KeyError, IndexError, TypeError, ImportError,
+    )
+except ImportError:
+    _LLM_ERRORS = (ValueError, KeyError, IndexError, TypeError, ImportError)
+
 _BATCH_SIZE = 20  # sessions per Bedrock call
 
 
@@ -76,6 +84,7 @@ class LLMScorer:
     def _get_client(self):
         if self._client is None:
             import os
+
             import boto3
             profile = self._profile or os.getenv("AWS_PROFILE", "")
             session = boto3.Session(profile_name=profile) if profile else boto3.Session()
@@ -101,7 +110,6 @@ class LLMScorer:
 
     def _llm_score(self, sessions: list[Session]) -> list[Session] | None:
         """Score sessions with Bedrock. Returns None to signal fallback."""
-        import sys
         score_map: dict[str, float] = {}
         total_batches = (len(sessions) + _BATCH_SIZE - 1) // _BATCH_SIZE
         try:
@@ -111,7 +119,7 @@ class LLMScorer:
                       f"({batch_num * _BATCH_SIZE if batch_num < total_batches else len(sessions)}"
                       f"/{len(sessions)} sessions)   ", end="", flush=True)
             print()  # newline after progress
-        except Exception as exc:
+        except _LLM_ERRORS as exc:
             print()
             logger.debug("Bedrock scoring failed (%s) — falling back to keyword scorer", exc)
             return None
