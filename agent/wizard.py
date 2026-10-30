@@ -5,19 +5,20 @@ from __future__ import annotations
 import asyncio
 import getpass
 import json
+import logging
 import os
 import re
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import click
 import yaml
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import box
-from rich.text import Text
+
+logger = logging.getLogger(__name__)
 
 console = Console(width=160)
 
@@ -117,11 +118,17 @@ def _multiselect(options: list[str], prompt: str, current: list[str] | None = No
 def _load_config() -> dict:
     if _CONFIG_PATH.exists():
         with open(_CONFIG_PATH) as f:
-            return yaml.safe_load(f) or {}
-    return {}
+            config = yaml.safe_load(f) or {}
+    else:
+        config = {}
+    if os.getenv("AWSEVENTS_EMAIL"):  # account email lives in .env, not the repo
+        config.setdefault("registration", {})["email"] = os.environ["AWSEVENTS_EMAIL"]
+    return config
 
 
 def _save_config(config: dict) -> None:
+    if os.getenv("AWSEVENTS_EMAIL") and config.get("registration", {}).get("email") == os.environ["AWSEVENTS_EMAIL"]:
+        config = {**config, "registration": {**config["registration"], "email": ""}}  # don't write it back to the repo
     with open(_CONFIG_PATH, "w") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -156,7 +163,7 @@ def step_user_details(config: dict) -> dict:
     reg["email"] = email
 
     current_pw = os.getenv("AWSEVENTS_PASSWORD", "")
-    console.print(f"  Password  [dim](stored in .env only — never committed)[/dim]")
+    console.print("  Password  [dim](stored in .env only — never committed)[/dim]")
     if current_pw:
         change = click.confirm("  Password already set in .env. Change it?", default=False)
         if change:
@@ -240,7 +247,7 @@ def step_configure_interests(config: dict) -> dict:
     # Max sessions per day
     current_max = prefs.get("max_sessions_per_day", 6)
     max_per_day = click.prompt(
-        f"  Max sessions per day",
+        "  Max sessions per day",
         default=current_max, type=int,
     )
     prefs["max_sessions_per_day"] = max_per_day
@@ -259,12 +266,12 @@ async def step_fetch_catalog(config: dict) -> list:
     email = reg.get("email", "")
     password = os.getenv("AWSEVENTS_PASSWORD", "")
 
-    from agent.wishlist import sync_wishlist, save_results, load_catalog
     from agent.scorer import Scorer
+    from agent.wishlist import load_catalog, save_results
 
     if _CATALOG_PATH.exists():
         use_cache = click.confirm(
-            f"  reinvent_catalog.json already exists. Use cached catalog?",
+            "  reinvent_catalog.json already exists. Use cached catalog?",
             default=True,
         )
         if use_cache:
@@ -289,7 +296,7 @@ async def step_fetch_catalog(config: dict) -> list:
 
 async def _fetch_fresh(email: str, password: str) -> list:
     from agent.wishlist import sync_wishlist
-    console.print(f"  Fetching from catalog.awsevents.com…")
+    console.print("  Fetching from catalog.awsevents.com…")
     try:
         all_sessions, _ = await sync_wishlist(email, password, headless=True)
         console.print(f"  [green]✓ Fetched {len(all_sessions)} sessions[/green]")
@@ -345,8 +352,8 @@ def step_recommendations_review(scored_sessions: list) -> set[str]:
                     excl_file.unlink(missing_ok=True)
                     return excluded
                 excluded.clear()
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError):
+            logger.debug("could not read saved exclusions from %s", excl_file, exc_info=True)
 
     page_size = 10
     i = 0
@@ -422,7 +429,7 @@ def step_conflict_resolver(schedule: list[dict]) -> list[dict]:
         by_day.setdefault(s.get("start_date", ""), []).append(s)
 
     conflicts: list[tuple[dict, dict]] = []
-    for day, sessions in by_day.items():
+    for sessions in by_day.values():
         ordered = sorted(sessions, key=lambda x: x.get("scheduled_start") or "")
         for j in range(len(ordered) - 1):
             a = ordered[j]
@@ -496,7 +503,7 @@ def step_conflict_resolver(schedule: list[dict]) -> list[dict]:
 def print_schedule(schedule: list[dict], offer_html: bool = True) -> None:
     """Day-by-hour schedule with venue and travel warnings."""
     if offer_html:
-        from agent.html_views import html_schedule, open_in_browser
+        from agent.html_views import html_schedule
         html = html_schedule(schedule)
         _offer_html(html, "step5_schedule.html", "Schedule (visual, day tabs)")
 
@@ -512,7 +519,7 @@ def print_schedule(schedule: list[dict], offer_html: bool = True) -> None:
     for day, sessions in sorted(by_day.items()):
         day_label = _DAY_NAMES.get(day, day)
         total = len(sessions)
-        clusters = set(_venue_cluster(s.get("location")) for s in sessions if _venue_cluster(s.get("location")))
+        clusters = {_venue_cluster(s.get("location")) for s in sessions if _venue_cluster(s.get("location"))}
         cluster_labels = " → ".join(_CLUSTER_LABELS[c] for c in sorted(clusters) if c > 0)
         console.print(f"\n[bold reverse] {day_label}  —  {total} sessions  {cluster_labels} [/bold reverse]")
         console.print()
@@ -535,11 +542,11 @@ def print_schedule(schedule: list[dict], offer_html: bool = True) -> None:
             se = s.get("scheduled_end")
             try:
                 start_dt = datetime.fromisoformat(ss) if ss else None
-            except Exception:
+            except (ValueError, TypeError):
                 start_dt = None
             try:
                 end_dt = datetime.fromisoformat(se) if se else None
-            except Exception:
+            except (ValueError, TypeError):
                 end_dt = None
 
             start_str = start_dt.strftime("%H:%M") if start_dt else (s.get("start_time") or "?")[:5]
@@ -608,7 +615,8 @@ def export_ics(schedule: list[dict], path: Path) -> None:
         try:
             start_dt = datetime.fromisoformat(ss)
             end_dt = datetime.fromisoformat(se) if se else start_dt + timedelta(hours=1)
-        except Exception:
+        except (ValueError, TypeError):
+            logger.debug("skipping %r: bad start/end time", s.get("title"), exc_info=True)
             continue
 
         dtstart = start_dt.strftime("%Y%m%dT%H%M%S")
@@ -650,15 +658,16 @@ def _ics_escape(text: str) -> str:
 
 def _dicts_to_scheduled(dicts: list[dict]):
     """Convert schedule dicts back to ScheduledSession objects for the registrar."""
+    from datetime import date as dt_date
+
     from agent.catalog import Session as CSession
     from agent.scheduler import ScheduledSession
-    from datetime import date as dt_date
 
     result = []
     for item in dicts:
         try:
             start_date = dt_date.fromisoformat(item["start_date"]) if item.get("start_date") else dt_date(2026, 11, 30)
-        except Exception:
+        except (ValueError, TypeError):
             start_date = dt_date(2026, 11, 30)
         s = CSession(
             event_id=item["event_id"],
@@ -679,7 +688,8 @@ def _dicts_to_scheduled(dicts: list[dict]):
         try:
             start_dt = datetime.fromisoformat(item["scheduled_start"])
             end_dt = datetime.fromisoformat(item["scheduled_end"])
-        except Exception:
+        except (KeyError, ValueError, TypeError):
+            logger.debug("skipping %r: bad schedule times", item.get("title"), exc_info=True)
             continue
         result.append(ScheduledSession(session=s, day=item.get("start_date", ""), start=start_dt, end=end_dt))
     return result
@@ -753,14 +763,14 @@ def step_export_and_register(schedule_dicts: list[dict], config: dict) -> list[d
         })
 
     Path("registration_results.json").write_text(json.dumps(results, indent=2))
-    console.print(f"  [dim]Registration results saved to registration_results.json[/dim]")
+    console.print("  [dim]Registration results saved to registration_results.json[/dim]")
     return results
 
 
 async def _run_registration(reg, ss_list: list, watch: bool) -> list:
     if watch:
         return await reg.watch_and_register(ss_list)
-    return await reg.register_schedule(ss_list, watch=False)
+    return await reg.register_schedule(ss_list)
 
 
 # ── Step 7: Registration status ────────────────────────────────────────────────
@@ -773,7 +783,7 @@ def step_registration_status(results: list[dict], schedule: list[dict]) -> None:
     ))
 
     registered = [r for r in results if r.get("status") in ("registered", "already_registered")]
-    full_missed = [r for r in results if r.get("status") == "full"]
+    full_missed = [r for r in results if r.get("status") in ("full", "walk_up")]
     not_open    = [r for r in results if r.get("status") == "not_open"]
     errors      = [r for r in results if r.get("status") == "error"]
 
@@ -820,7 +830,7 @@ def _print_gaps(schedule: list[dict], registered_ids: set[str]) -> None:
             try:
                 s_dt = datetime.fromisoformat(s["scheduled_start"]) if s.get("scheduled_start") else None
                 e_dt = datetime.fromisoformat(s["scheduled_end"]) if s.get("scheduled_end") else None
-            except Exception:
+            except (ValueError, TypeError):
                 s_dt = e_dt = None
             if prev_end and s_dt and s_dt > prev_end:
                 gap = int((s_dt - prev_end).total_seconds() / 60)
@@ -871,7 +881,7 @@ def run_wizard() -> None:
     keynotes = _load_keynotes()
     schedule_dicts = _scheduled_to_dicts(scheduled) + keynotes
     schedule_dicts.sort(key=lambda x: (x.get("start_date", ""), x.get("scheduled_start") or ""))
-    console.print(f"  [green]✓ {len(scheduled)} sessions scheduled across {len(set(ss.day for ss in scheduled))} days[/green]")
+    console.print(f"  [green]✓ {len(scheduled)} sessions scheduled across {len({ss.day for ss in scheduled})} days[/green]")
 
     # Step 4: conflict resolver
     schedule_dicts = step_conflict_resolver(schedule_dicts)

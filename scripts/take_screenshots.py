@@ -3,12 +3,11 @@
 import asyncio
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent.html_views import html_schedule, html_slot_alternatives, open_in_browser
+from agent.html_views import html_schedule
 
 # ── Realistic mock schedule ────────────────────────────────────────────────────
 
@@ -236,7 +235,7 @@ async def main():
     )
     await screenshot(html_serve_dark, out / "edit_panel.png", width=1200, full_page=False)
 
-    print(f"\nDone → docs/screenshots/")
+    print("\nDone → docs/screenshots/")
     for f in sorted(out.glob("*.png")):
         kb = f.stat().st_size // 1024
         print(f"  {f.name}  ({kb} KB)")

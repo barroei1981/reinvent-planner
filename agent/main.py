@@ -12,21 +12,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from datetime import date
 from pathlib import Path
-from typing import Optional
 
 import click
+import httpx
 import yaml
 from dotenv import load_dotenv
+from rich import box
 from rich.console import Console
 from rich.table import Table
-from rich import box
 
-from agent.catalog import fetch_sessions, Session
+from agent.catalog import Session, fetch_sessions
+from agent.scheduler import ScheduledSession, build_schedule
 from agent.scorer import Scorer
-from agent.scheduler import build_schedule, ScheduledSession
 
 
 def _make_scorer(config: dict):
@@ -36,6 +37,7 @@ def _make_scorer(config: dict):
     if llm_cfg.get("enabled", False):
         try:
             import boto3  # noqa: F401
+
             from agent.llm_scorer import LLMScorer
             scorer = LLMScorer(llm_cfg, prefs)
             console.print("[dim]LLM scoring enabled (Bedrock)[/dim]")
@@ -46,6 +48,8 @@ def _make_scorer(config: dict):
 
 load_dotenv()
 console = Console(width=160)
+
+logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path("config.yaml")
 _SCHEDULE_PATH = Path("schedule.json")
@@ -58,7 +62,7 @@ _DAY_NAMES_PLAN = {
 }
 
 
-def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Optional[list[dict]]:
+def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> list[dict] | None:
     """Per-slot approval gate comparing existing schedule to a new plan.
 
     For each changed slot the user chooses:
@@ -98,7 +102,7 @@ def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Option
                 replacements.append((slot, e, n))
         elif n:
             additions.append((slot, n))
-        else:
+        elif e:
             drops.append((slot, e))
 
     if not replacements and not additions and not drops:
@@ -111,7 +115,7 @@ def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Option
         final.sort(key=lambda s: (s.get("start_date", ""), s.get("scheduled_start", "")))
         return final
 
-    final: list[dict] = [s for _, s in unchanged]
+    final = [s for _, s in unchanged]
 
     def _venue(s: dict) -> str:
         return (s.get("location") or "—").split("|")[0].strip()[:22]
@@ -144,7 +148,7 @@ def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Option
         if choice == "2":
             final.append(new)
             final.append({**curr, "backup": True,
-                          "backup_note": f"Previous primary, replaced by Bedrock recommendation"})
+                          "backup_note": "Previous primary, replaced by Bedrock recommendation"})
         elif choice == "3":
             final.append(curr)
         elif choice == "4":
@@ -190,7 +194,7 @@ def _run_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Option
     return final
 
 
-def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> Optional[list[dict]]:
+def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> list[dict] | None:
     """HTML-based approval gate — opens a browser page instead of terminal prompts.
 
     Falls back to _run_approval_gate() if uvicorn/starlette are not installed.
@@ -220,7 +224,7 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> O
                 replacements.append((slot, e, n))
         elif n:
             additions.append((slot, n))
-        else:
+        elif e:
             drops.append((slot, e))
 
     if not replacements and not additions and not drops:
@@ -233,10 +237,10 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> O
         return final
 
     try:
-        from starlette.applications import Starlette
-        from starlette.responses import HTMLResponse, JSONResponse
-        from starlette.routing import Route
         import uvicorn
+        from starlette.applications import Starlette
+        from starlette.responses import HTMLResponse
+        from starlette.routing import Route
     except ImportError:
         console.print("[yellow]starlette/uvicorn not installed — using terminal approval gate[/yellow]")
         console.print("[dim](Run `uv sync --extra mcp` to enable the HTML gate)[/dim]")
@@ -261,7 +265,7 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> O
         add_choices = {a["slot"]: a.get("include", True) for a in body.get("additions", [])}
         drop_choices = {d["slot"]: d.get("keep", True) for d in body.get("drops", [])}
 
-        final: list[dict] = [s for _, s in unchanged]
+        final = [s for _, s in unchanged]
 
         for slot, curr, new in replacements:
             choice = rep_choices.get(slot, "1")
@@ -293,9 +297,7 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> O
 
         final.sort(key=lambda s: (s.get("start_date", ""), s.get("scheduled_start", "")))
 
-        import json as _json
-        with open(_SCHEDULE_PATH, "w") as f:
-            _json.dump(final, f, indent=2)
+        _SCHEDULE_PATH.write_text(json.dumps(final, indent=2))
 
         _choices["final"] = final
         _done.set()
@@ -340,9 +342,12 @@ def _run_html_approval_gate(existing: list[dict], new_sessions: list[dict]) -> O
 
 def _load_config() -> dict:
     if not _CONFIG_PATH.exists():
-        raise click.ClickException(f"config.yaml not found — copy from config.yaml.example and fill in your preferences")
+        raise click.ClickException("config.yaml not found — copy from config.yaml.example and fill in your preferences")
     with open(_CONFIG_PATH) as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    if os.getenv("AWSEVENTS_EMAIL"):  # keep the account email out of the (public) repo
+        config.setdefault("registration", {})["email"] = os.environ["AWSEVENTS_EMAIL"]
+    return config
 
 
 def _sessions_to_dict(schedule: list[ScheduledSession]) -> list[dict]:
@@ -382,7 +387,7 @@ def _load_schedule(config: dict) -> list[ScheduledSession]:
         data = json.load(f)
 
     from datetime import datetime
-    from agent.catalog import Session
+
     from agent.scheduler import ScheduledSession
 
     sessions = []
@@ -422,6 +427,34 @@ def cli() -> None:
 
 # ── sync-wishlist ─────────────────────────────────────────────────────────────
 
+@cli.command()
+def login() -> None:
+    """Log in once in a Chrome window and save the session for the seat check (needed on Windows)."""
+    from agent.platform_compat import cookie_file
+    from agent.registrar import _PLAYWRIGHT_CHROME_PROFILE
+    from agent.seats import clear_auth_alert, fetch_seat_status
+    from agent.wishlist import login_and_save_cookies
+
+    def _wait() -> None:
+        input("Sign in to AWS Events in the Chrome window, then press Enter here... ")
+
+    try:
+        saved = asyncio.run(login_and_save_cookies(_PLAYWRIGHT_CHROME_PROFILE, _wait))
+    except (RuntimeError, OSError, asyncio.TimeoutError) as exc:
+        raise click.ClickException(f"login failed: {exc}")
+    console.print(f"Saved {saved} cookies to {cookie_file()}")
+    config = _load_config()
+    api_cfg = config.get("catalog_api", {})
+    try:
+        data = asyncio.run(fetch_seat_status(
+            _load_schedule(config), api_cfg.get("rf_profile_id", ""), api_cfg.get("rf_widget_id", "")
+        ))
+    except (RuntimeError, httpx.HTTPError) as exc:
+        raise click.ClickException(f"cookies saved, but the seat API still rejects them: {exc}")
+    clear_auth_alert()
+    console.print(f"[green]Logged in - {data['enrolled_total']} sessions on your account.[/green]")
+
+
 @cli.command("sync-wishlist")
 @click.option("--headless", is_flag=True, default=False, help="Run browser in headless mode (no visible window)")
 def sync_wishlist_cmd(headless: bool) -> None:
@@ -440,10 +473,10 @@ def sync_wishlist_cmd(headless: bool) -> None:
         console.print("[red]Set registration.email in config.yaml and AWSEVENTS_PASSWORD in .env[/red]")
         return
 
-    from agent.wishlist import sync_wishlist, save_results
+    from agent.wishlist import save_results, sync_wishlist
 
     async def _run() -> None:
-        console.print(f"[bold]Syncing re:Invent catalog from registration.awsevents.com...[/bold]")
+        console.print("[bold]Syncing re:Invent catalog from registration.awsevents.com...[/bold]")
         console.print(f"  Email: [cyan]{email}[/cyan]  |  Headless: {headless}")
         api_cfg = config.get("catalog_api", {})
         try:
@@ -470,7 +503,7 @@ def sync_wishlist_cmd(headless: bool) -> None:
             return
         save_results(all_sessions, wishlisted)
 
-        console.print(f"\n[bold green]Sync complete[/bold green]")
+        console.print("\n[bold green]Sync complete[/bold green]")
         console.print(f"  Total sessions in catalog : [cyan]{len(all_sessions)}[/cyan]")
         console.print(f"  Your wishlisted sessions  : [cyan]{len(wishlisted)}[/cyan]")
         if wishlisted:
@@ -489,7 +522,7 @@ def sync_wishlist_cmd(headless: bool) -> None:
 @click.option("--day", default=None, help="Filter to one day YYYY-MM-DD")
 @click.option("--all-events", is_flag=True, default=False, help="Ignore date/location filters — plan from full catalog")
 @click.option("--html", "with_html", is_flag=True, default=False, help="Use browser-based approval gate instead of terminal prompts")
-def plan(min_score: float, day: Optional[str], all_events: bool, with_html: bool) -> None:
+def plan(min_score: float, day: str | None, all_events: bool, with_html: bool) -> None:
     """Score + schedule sessions. Uses scraped catalog (reinvent_catalog.json) when available,
     falls back to the public AWS Events API otherwise."""
 
@@ -523,8 +556,8 @@ def plan(min_score: float, day: Optional[str], all_events: bool, with_html: bool
             else:
                 start, end, loc_text, loc_mode = None, None, None, None
 
-            console.print(f"[bold]Fetching from public AWS Events catalog...[/bold]")
-            console.print(f"[dim](Run 'awsevents sync-wishlist' first to use the full re:Invent session catalog)[/dim]")
+            console.print("[bold]Fetching from public AWS Events catalog...[/bold]")
+            console.print("[dim](Run 'awsevents sync-wishlist' first to use the full re:Invent session catalog)[/dim]")
             sessions = await fetch_sessions(
                 start_date=start, end_date=end,
                 location_text=loc_text, location_mode=loc_mode,
@@ -550,7 +583,7 @@ def plan(min_score: float, day: Optional[str], all_events: bool, with_html: bool
 
         wishlisted_in_schedule = sum(1 for ss in schedule if ss.session.score == 1.0)
         console.print(f"[bold green]Schedule built:[/bold green] {len(schedule)} sessions across "
-                      f"{len(set(ss.day for ss in schedule))} days  "
+                      f"{len({ss.day for ss in schedule})} days  "
                       f"([green]★ {wishlisted_in_schedule} wishlisted[/green])\n")
 
         _print_schedule(schedule)
@@ -559,8 +592,7 @@ def plan(min_score: float, day: Optional[str], all_events: bool, with_html: bool
 
         # ── Approval gate: per-slot interactive review ─────────────────────────
         if _SCHEDULE_PATH.exists():
-            with open(_SCHEDULE_PATH) as f:
-                existing = json.load(f)
+            existing = json.loads(_SCHEDULE_PATH.read_text())
             if with_html:
                 result = _run_html_approval_gate(existing, new_sessions)
             else:
@@ -571,8 +603,7 @@ def plan(min_score: float, day: Optional[str], all_events: bool, with_html: bool
             new_sessions = result
         # No existing schedule — first run, save directly
 
-        with open(_SCHEDULE_PATH, "w") as f:
-            json.dump(new_sessions, f, indent=2)
+        _SCHEDULE_PATH.write_text(json.dumps(new_sessions, indent=2))
         console.print(f"\n[dim]Schedule saved to {_SCHEDULE_PATH}[/dim]")
 
     asyncio.run(_run())
@@ -686,16 +717,14 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
         schedule = json.load(f)
 
     config = _load_config()
-    prefs = config.get("preferences", {})
-    target_aoi = set(prefs.get("areas_of_interest", []))
-    target_topics = set(prefs.get("topic_tracks", []))
 
-    from agent.wizard import print_schedule, _DAY_NAMES, _HOP_MINUTES, _venue_cluster
-    from agent.html_views import html_slot_alternatives, open_in_browser
     from datetime import datetime, timedelta
 
+    from agent.html_views import html_slot_alternatives, open_in_browser
+    from agent.wizard import _DAY_NAMES
+
     # Pick day
-    days = sorted(set(s.get("start_date", "") for s in schedule if s.get("start_date")))
+    days = sorted({s.get("start_date", "") for s in schedule if s.get("start_date")})
     if not day:
         console.print("\n[bold]Days in your schedule:[/bold]")
         for i, d in enumerate(days, 1):
@@ -733,14 +762,14 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
         target_session = next((s for s in day_sessions if (s.get("start_time") or "").startswith(time_slot[:5])), None)
 
     if not target_session:
-        console.print(f"[red]Session not found[/red]")
+        console.print("[red]Session not found[/red]")
         return
 
     # Determine free window
     try:
         slot_start = datetime.fromisoformat(target_session["scheduled_start"])
         slot_end   = datetime.fromisoformat(target_session["scheduled_end"])
-    except Exception:
+    except (KeyError, ValueError, TypeError):
         console.print("[red]Cannot parse session times[/red]")
         return
 
@@ -768,7 +797,7 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
             return False
         try:
             cand_start = datetime.strptime(f"{day}T{cand_start_str}", "%Y-%m-%dT%H:%M")
-        except Exception:
+        except ValueError:
             return False
         dur = 60
         stype = (candidate.event_type or "").lower()
@@ -781,8 +810,8 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
                 o_end   = datetime.fromisoformat(other["scheduled_end"])
                 if max(cand_start, o_start) < min(cand_end, o_end):
                     return True
-            except Exception:
-                pass
+            except (KeyError, ValueError, TypeError):
+                logger.debug("skipping %r: bad schedule times", other.get("title"), exc_info=True)
         return False
 
     conf_days = {"2026-11-30","2026-12-01","2026-12-02","2026-12-03","2026-12-04","2026-12-05"}
@@ -863,7 +892,7 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
             # Build replacement entry
             try:
                 new_start = datetime.strptime(f"{day}T{new_session.start_time}", "%Y-%m-%dT%H:%M")
-            except Exception:
+            except ValueError:
                 new_start = slot_start
             dur_min = 120 if "workshop" in (new_session.event_type or "").lower() else 60
             new_end = new_start + timedelta(minutes=dur_min)
@@ -894,7 +923,7 @@ def edit(day: str | None, time_slot: str | None, show_all: bool, with_html: bool
                 json.dump(updated, f, indent=2)
 
             console.print(f"\n  [green]✓ Swapped in:[/green] [bold]{new_session.title[:70]}[/bold]")
-            console.print(f"  [dim]schedule.json updated. Run 'awsevents schedule' to review.[/dim]")
+            console.print("  [dim]schedule.json updated. Run 'awsevents schedule' to review.[/dim]")
 
 
 @cli.command()
@@ -911,6 +940,7 @@ def serve(port: int, no_open: bool) -> None:
     Requires: uv sync --extra mcp  (pulls in uvicorn + starlette)
     """
     import uvicorn
+
     from agent.serve import create_app
 
     if not _SCHEDULE_PATH.exists():
@@ -918,9 +948,9 @@ def serve(port: int, no_open: bool) -> None:
         return
 
     url = f"http://localhost:{port}"
-    console.print(f"[bold]re:Invent Planner[/bold]  [dim]live edit UI[/dim]")
+    console.print("[bold]re:Invent Planner[/bold]  [dim]live edit UI[/dim]")
     console.print(f"  [cyan]{url}[/cyan]")
-    console.print(f"  [dim]Ctrl+C to stop[/dim]\n")
+    console.print("  [dim]Ctrl+C to stop[/dim]\n")
 
     if not no_open:
         import threading
@@ -933,6 +963,103 @@ def serve(port: int, no_open: bool) -> None:
 def register() -> None:
     """Register for sessions from saved schedule.json immediately."""
     _do_register(watch=False)
+
+
+@cli.command()
+@click.option("--auto-reserve", is_flag=True, default=False,
+              help="Reserve planned sessions that just became reservable (never releases existing seats)")
+def seats(auto_reserve: bool) -> None:
+    """Show real seat availability / enrollment for schedule.json (API; browser only with --auto-reserve)."""
+    from agent.seats import (
+        ALERT_LOG,
+        add_events,
+        clear_auth_alert,
+        fetch_seat_status,
+        find_openings,
+        load_previous,
+        notify,
+        notify_auth_expired,
+        write_status,
+    )
+
+    config = _load_config()
+    api_cfg = config.get("catalog_api", {})
+    schedule = _load_schedule(config)
+    try:
+        data = asyncio.run(fetch_seat_status(
+            schedule, api_cfg.get("rf_profile_id", ""), api_cfg.get("rf_widget_id", "")
+        ))
+    except (RuntimeError, httpx.HTTPError) as exc:
+        if str(exc).startswith("not authenticated"):
+            notify_auth_expired()
+        raise click.ClickException(str(exc))
+    clear_auth_alert()
+    prev = load_previous()
+    openings = find_openings(prev, data)
+    old = prev.get("sessions", {})
+    newly_enrolled = [
+        v for k, v in data["sessions"].items()
+        if v["status"] == "enrolled" and old.get(k, {}).get("status", "enrolled") != "enrolled"
+    ]
+    add_events(data, prev, [f"Opened: {o['code']} {o['title'][:60]} ({o['seats_remaining']} seats)" for o in openings]
+               + [f"Enrolled: {v['code']} {v['title'][:60]}" for v in newly_enrolled])
+    write_status(data)
+    if openings:
+        notify(openings)
+        console.print(f"[bold green]{len(openings)} session(s) just opened — see {ALERT_LOG}[/bold green]")
+    if auto_reserve and openings:
+        data = _auto_reserve(config, schedule, openings, data)
+
+    table = Table(title=f"Seat status — {data['enrolled_total']} sessions enrolled on your account", box=box.MINIMAL_DOUBLE_HEAD)
+    table.add_column("Status", width=14)
+    table.add_column("Seats", width=9, justify="right")
+    table.add_column("When", width=12)
+    table.add_column("Session")
+    colours = {"enrolled": "green", "reservable": "cyan", "walk_up": "magenta", "waitlist_open": "yellow", "full": "red", "unknown": "dim"}
+    for s in sorted(data["sessions"].values(), key=lambda x: (x["status"] != "reservable", x["scheduled_start"])):
+        seats_txt = "" if s["seats_remaining"] is None else f"{s['seats_remaining']}/{s['capacity']}"
+        table.add_row(
+            f"[{colours.get(s['status'], 'white')}]{s['status']}[/]",
+            seats_txt,
+            s["scheduled_start"][5:16].replace("T", " "),
+            s["title"][:70] + (" (backup)" if s["backup"] else ""),
+        )
+    console.print(table)
+    console.print(f"Summary (primary sessions): {data['summary']}")
+
+
+def _auto_reserve(config: dict, schedule: list[ScheduledSession], openings: list[dict], data: dict) -> dict:
+    """Book newly opened planned sessions, then refresh the status file so the dashboard reflects it."""
+    from agent.registrar import Registrar
+    from agent.seats import add_events, fetch_seat_status, notify_text, write_status
+
+    reg_cfg = config.get("registration", {})
+    only = {ss.session.event_id for ss in schedule if ss.session.title in {o["title"] for o in openings}}
+    reg = Registrar(reg_cfg, email=reg_cfg.get("email") or "", password=os.getenv("AWSEVENTS_PASSWORD", ""))
+    try:
+        results = asyncio.run(reg.register_schedule(schedule, only=only))
+    except (RuntimeError, OSError) as exc:
+        console.print(f"[red]auto-reserve failed: {exc}[/red]")
+        notify_text(f"Auto-reserve failed: {str(exc)[:80]}")
+        add_events(data, data, [f"Auto-reserve failed: {str(exc)[:80]}"])
+        write_status(data)
+        return data
+    done = [r for r in results if r.status == "registered"]
+    for r in results:
+        if r.session.event_id in only and r.status != "already_registered":
+            console.print(f"auto-reserve {r.status}: {r.session.title[:70]} {r.message}")
+    notify_text(
+        (f"Reserved {len(done)}: " + "; ".join(r.session.title[:40] for r in done)) if done
+        else "A planned session opened but could not be reserved - check awsevents_cron.log in the temp dir (/tmp on macOS)"
+    )
+    api = config.get("catalog_api", {})
+    fresh = asyncio.run(fetch_seat_status(schedule, api.get("rf_profile_id", ""), api.get("rf_widget_id", "")))
+    add_events(fresh, data, [
+        f"{'Reserved' if r.status == 'registered' else r.status.upper()}: {r.session.title[:60]} {r.message}".strip()
+        for r in results if r.session.event_id in only and r.status != "already_registered"
+    ])
+    write_status(fresh)
+    return fresh
 
 
 @cli.command()
@@ -966,15 +1093,15 @@ def _do_register(watch: bool) -> None:
         if watch:
             results = await reg.watch_and_register(schedule)
         else:
-            results = await reg.register_schedule(schedule, watch=False)
+            results = await reg.register_schedule(schedule)
 
         table = Table(title="Registration results", box=box.MINIMAL_DOUBLE_HEAD)
         table.add_column("Status", width=18)
         table.add_column("Session")
         for r in results:
-            colour = {"registered": "green", "full": "red", "already_registered": "blue",
-                      "not_open": "yellow", "error": "red"}.get(r.status, "white")
-            table.add_row(f"[{colour}]{r.status}[/{colour}]", r.session.title[:80])
+            colour = {"registered": "green", "full": "red", "already_registered": "blue", "walk_up": "magenta",
+                      "conflict": "yellow", "unknown": "dim", "error": "red"}.get(r.status, "white")
+            table.add_row(f"[{colour}]{r.status}[/{colour}]", (r.session.title[:60] + (f"  — {r.message}" if r.message else ""))[:100])
         console.print(table)
 
     asyncio.run(_run())

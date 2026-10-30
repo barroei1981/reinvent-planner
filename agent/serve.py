@@ -17,11 +17,10 @@ POST /api/remove           remove a session
 from __future__ import annotations
 
 import json
-import webbrowser
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, date
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
@@ -43,9 +42,11 @@ _CONF_DAYS = {
 
 
 class _State:
-    config: dict = {}
-    scored: list = []   # scored Session objects, pre-loaded on startup
     port: int = 8080
+
+    def __init__(self) -> None:
+        self.config: dict = {}
+        self.scored: list = []   # scored Session objects, pre-loaded on startup
 
 
 _st = _State()
@@ -59,14 +60,12 @@ def _load_schedule() -> list[dict]:
 
 
 def _save_schedule(schedule: list[dict]) -> None:
-    with open(_SCHEDULE_PATH, "w") as f:
-        json.dump(schedule, f, indent=2)
+    _SCHEDULE_PATH.write_text(json.dumps(schedule, indent=2))
 
 
 @asynccontextmanager
 async def _lifespan(app):
-    with open(_CONFIG_PATH) as f:
-        _st.config = yaml.safe_load(f)
+    _st.config = yaml.safe_load(_CONFIG_PATH.read_text())
 
     prefs = _st.config.get("preferences", {})
     from agent.scorer import Scorer
@@ -81,7 +80,6 @@ async def _lifespan(app):
         ev_cfg = _st.config.get("event", {})
         start = date.fromisoformat(ev_cfg["start_date"]) if ev_cfg.get("start_date") else None
         end = date.fromisoformat(ev_cfg["end_date"]) if ev_cfg.get("end_date") else None
-        import asyncio
         sessions = await fetch_sessions(
             start_date=start, end_date=end,
             location_text=ev_cfg.get("location_keyword"),
@@ -127,10 +125,10 @@ async def get_alternatives(request: Request) -> JSONResponse:
     # Other sessions on the same day (for conflict check)
     other_day = [s for s in schedule if s.get("start_date") == day and s["event_id"] != exclude_id]
 
-    def _range(s: dict) -> Optional[tuple[datetime, datetime]]:
+    def _range(s: dict) -> tuple[datetime, datetime] | None:
         try:
             return datetime.fromisoformat(s["scheduled_start"]), datetime.fromisoformat(s["scheduled_end"])
-        except Exception:
+        except (KeyError, ValueError, TypeError):
             return None
 
     other_ranges = [r for s in other_day if (r := _range(s))]
@@ -140,7 +138,7 @@ async def get_alternatives(request: Request) -> JSONResponse:
             return False
         try:
             cs = datetime.strptime(f"{day}T{cand.start_time}", "%Y-%m-%dT%H:%M")
-        except Exception:
+        except ValueError:
             return False
         dur = 120 if "workshop" in (cand.event_type or "").lower() else 60
         ce = cs + timedelta(minutes=dur)
@@ -194,7 +192,7 @@ async def post_swap(request: Request) -> JSONResponse:
 
     try:
         new_start = datetime.strptime(f"{day}T{new_sess.start_time}", "%Y-%m-%dT%H:%M")
-    except Exception:
+    except ValueError:
         return JSONResponse({"error": "cannot parse session start time"}, status_code=400)
 
     dur_min = 120 if "workshop" in (new_sess.event_type or "").lower() else 60

@@ -6,7 +6,7 @@
 
 ## 📊 Current Registration
 
-- **Email:** roei.bar@bankleumi.co.il
+- **Email:** $AWSEVENTS_EMAIL (from .env)
 - **Sessions:** 47 on waitlist (all full as of last check)
 - **Strategy:** API-first (tries AWS API, falls back to Playwright)
 - **Monitoring:** Cron job every 10 minutes
@@ -155,7 +155,7 @@ nano ~/bin/awsevents_check.sh
 
 # Add after registration:
 if grep -q "registered" /tmp/awsevents_last_run.log; then
-  echo "Seat registered!" | mail -s "re:Invent Seat Available" roei.bar@bankleumi.co.il
+  echo "Seat registered!" | mail -s "re:Invent Seat Available" "$AWSEVENTS_EMAIL"
 fi
 ```
 

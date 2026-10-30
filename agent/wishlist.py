@@ -19,23 +19,42 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
-from dataclasses import asdict, dataclass, replace as dc_replace
+import sqlite3
+from dataclasses import asdict, dataclass
+from dataclasses import replace as dc_replace
 from pathlib import Path
-from typing import Optional
+
+from agent.platform_compat import chrome_profile1_cookies, chrome_user_data_dir, cookie_file
+
+logger = logging.getLogger(__name__)
 
 try:
-    from playwright.async_api import async_playwright, Page, BrowserContext, Locator
+    from playwright.async_api import BrowserContext, Page, async_playwright
+    from playwright.async_api import Error as PlaywrightError
     _PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     _PLAYWRIGHT_AVAILABLE = False
 
+    class PlaywrightError(Exception):  # type: ignore[no-redef]
+        """Placeholder so `except PlaywrightError` resolves when playwright is not installed."""
+
 try:
-    import httpx as _httpx
     import browser_cookie3 as _bc3
+    import httpx as _httpx
     _API_AVAILABLE = True
+    # unreadable cookie DB / undecryptable value (e.g. Windows Chrome v20)
+    _COOKIE_ERRORS: tuple[type[Exception], ...] = (
+        OSError, sqlite3.Error, ValueError, RuntimeError, _bc3.BrowserCookieError,
+    )
+    _API_ERRORS: tuple[type[Exception], ...] = (
+        _httpx.HTTPError, KeyError, TypeError, *_COOKIE_ERRORS,
+    )
 except ImportError:
     _API_AVAILABLE = False
+    _COOKIE_ERRORS = (RuntimeError,)
+    _API_ERRORS = (RuntimeError,)
 
 # re:Invent 2026 catalog URL (Playwright fallback)
 _CATALOG_URL = "https://registration.awsevents.com/flow/awsevents/reinvent2026/event-catalog/page/eventCatalog"
@@ -53,9 +72,7 @@ _RF_API_HEADERS_BASE = {
 
 def _rf_headers(profile_id: str, widget_id: str) -> dict:
     return {**_RF_API_HEADERS_BASE, "rfapiprofileid": profile_id, "rfwidgetid": widget_id}
-_CHROME_PROFILE_1_COOKIES = (
-    Path.home() / "Library/Application Support/Google/Chrome/Profile 1/Cookies"
-)
+_CHROME_PROFILE_1_COOKIES = chrome_profile1_cookies()
 _LOGIN_URLS = [
     "https://registration.awsevents.com/",
     "https://builder.aws.com",
@@ -70,19 +87,19 @@ class ReinventSession:
     session_id: str
     title: str
     description: str
-    date: Optional[str]
-    time: Optional[str]
-    venue: Optional[str]
-    room: Optional[str]
-    level: Optional[str]
-    session_type: Optional[str]
+    date: str | None
+    time: str | None
+    venue: str | None
+    room: str | None
+    level: str | None
+    session_type: str | None
     topics: list[str]
     areas_of_interest: list[str]
     roles: list[str]
     speakers: list[str]
     is_wishlisted: bool
-    capacity: Optional[str]
-    registration_url: Optional[str]
+    capacity: str | None
+    registration_url: str | None
 
 
 async def _wait_for_login(page: Page, email: str, password: str) -> bool:
@@ -103,7 +120,7 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
         await continue_btn.click()
         await page.wait_for_load_state("networkidle")
         print("[wishlist] Email submitted")
-    except Exception as exc:
+    except PlaywrightError as exc:
         print(f"[wishlist] WARNING: email step failed: {exc}")
 
     # ── Step 2: password ──────────────────────────────────────────────────
@@ -117,7 +134,7 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
         await sign_in_btn.click()
         await page.wait_for_load_state("networkidle")
         print("[wishlist] Password submitted")
-    except Exception as exc:
+    except PlaywrightError as exc:
         print(f"[wishlist] WARNING: password step failed: {exc}")
 
     # ── Step 3: MFA / TOTP ────────────────────────────────────────────────
@@ -128,8 +145,8 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
         ).first
         if await mfa_input.is_visible(timeout=4000):
             print("[wishlist] ⚠  MFA required — enter your code in the browser window")
-    except Exception:
-        pass
+    except PlaywrightError:
+        logger.debug("MFA prompt not detected", exc_info=True)
 
     # ── Step 4: post-login consent / terms ───────────────────────────────
     for btn_text in ["Accept", "I Accept", "I Agree", "Agree", "Continue", "OK"]:
@@ -138,18 +155,19 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
             if await btn.is_visible(timeout=2000):
                 await btn.click()
                 await page.wait_for_load_state("networkidle")
-        except Exception:
+        except PlaywrightError:
+            logger.debug("consent button %r not usable", btn_text, exc_info=True)
             continue
 
     # ── Step 5: wait for catalog URL — prompt for manual completion ───────
-    catalog_pattern = re.compile(r"(reinvent2026|eventCatalog|event-catalog|dashboard|myagenda)", re.I)
+    catalog_pattern = re.compile(r"(reinvent2026|eventCatalog|event-catalog|dashboard|myagenda)", re.IGNORECASE)
 
     # Quick check — did automated login succeed?
     try:
         await page.wait_for_url(catalog_pattern, timeout=8000)
         return True
-    except Exception:
-        pass
+    except PlaywrightError:
+        logger.debug("automated login not confirmed within 8s", exc_info=True)
 
     # Automated login likely failed (ERR-837, corporate SSO, CAPTCHA).
     # Give the user time to complete login manually in the browser window.
@@ -165,8 +183,8 @@ async def _wait_for_login(page: Page, email: str, password: str) -> bool:
         try:
             await page.wait_for_url(catalog_pattern, timeout=300_000)
             return True
-        except Exception:
-            pass
+        except PlaywrightError:
+            logger.debug("manual login not completed within 5 minutes", exc_info=True)
 
     current_url = page.url.lower()
     return "signin.aws" not in current_url and "login" not in current_url
@@ -346,8 +364,8 @@ async def _scrape_via_network_intercept(page: Page) -> list[dict]:
                                 break
                     if items:
                         captured.extend(items)
-            except Exception:
-                pass
+            except (PlaywrightError, ValueError, TypeError):
+                logger.debug("could not parse response from %s", url, exc_info=True)
 
     page.on("response", handle_response)
     # Trigger a reload to capture the initial data load
@@ -372,7 +390,8 @@ async def _get_total_pages(page: Page) -> int:
             }
         """)
         return max(1, int(result))
-    except Exception:
+    except (PlaywrightError, ValueError, TypeError):
+        logger.debug("could not read page count", exc_info=True)
         return 1
 
 
@@ -393,7 +412,8 @@ async def _click_next_page(page: Page) -> bool:
                 await page.wait_for_load_state("networkidle")
                 await asyncio.sleep(0.8)
                 return True
-        except Exception:
+        except PlaywrightError:
+            logger.debug("next-page selector %r not usable", selector, exc_info=True)
             continue
     return False
 
@@ -404,25 +424,85 @@ def _load_chrome_profile1_cookies() -> tuple[dict[str, str], str]:
     Returns (cookies_dict, rfjwt_token).
     Loads in priority order: catalog.awsevents.com JSESSIONID takes precedence.
     """
-    if not _API_AVAILABLE:
-        return {}, ""
-    if not _CHROME_PROFILE_1_COOKIES.exists():
-        return {}, ""
     cookies: dict[str, str] = {}
     rfjwt = ""
-    # Load lower-priority first; higher-priority domains overwrite duplicates
-    for domain in ["registration.awsevents.com", ".awsevents.com", "catalog.awsevents.com"]:
+    if _API_AVAILABLE and _CHROME_PROFILE_1_COOKIES.exists():
+        # Load lower-priority first; higher-priority domains overwrite duplicates
+        for domain in ["registration.awsevents.com", ".awsevents.com", "catalog.awsevents.com"]:
+            try:
+                for c in _bc3.chrome(cookie_file=str(_CHROME_PROFILE_1_COOKIES), domain_name=domain):
+                    cookies[c.name] = c.value
+                    if c.name == "rfjwt":
+                        rfjwt = c.value
+            except _COOKIE_ERRORS:
+                # unreadable DB / undecryptable value (e.g. Windows Chrome v20) -> fall back to the cookie file
+                logger.debug("could not read %s cookies from Chrome", domain, exc_info=True)
+    return (cookies, rfjwt) if cookies else _load_cookie_file()
+
+
+_COOKIE_DOMAIN_PRIORITY = {"registration.awsevents.com": 0, "catalog.awsevents.com": 2}
+
+
+def _load_cookie_file(path: Path | None = None, now: float | None = None) -> tuple[dict[str, str], str]:
+    """Cookies saved by `awsevents login`, same precedence as the Chrome loader; expired entries skipped."""
+    import time
+
+    try:
+        records = json.loads((path or cookie_file()).read_text())
+    except (OSError, ValueError):
+        return {}, ""
+    now = time.time() if now is None else now
+    live = [
+        r for r in records
+        if isinstance(r, dict) and "awsevents.com" in str(r.get("domain", "")) and r.get("name")
+        and not (r.get("expires", -1) and 0 < r["expires"] < now)
+    ]
+    cookies: dict[str, str] = {}
+    for r in sorted(live, key=lambda r: _COOKIE_DOMAIN_PRIORITY.get(str(r["domain"]), 1)):
+        cookies[r["name"]] = str(r.get("value", ""))
+    return cookies, cookies.get("rfjwt", "")
+
+
+def _save_cookie_file(records: list[dict], path: Path | None = None) -> int:
+    """Write the awsevents.com cookies (session tokens - keep them private) and return how many were kept."""
+    import os
+
+    path = path or cookie_file()
+    keep = [r for r in records if "awsevents.com" in str(r.get("domain", ""))]
+    path.write_text(json.dumps(keep))
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass  # Windows: the user-profile ACL already restricts it
+    return len(keep)
+
+
+async def login_and_save_cookies(
+    profile_dir: Path, wait_for_user, timeout_s: int = 60, headless: bool = False
+) -> int:
+    """Open a real Chrome window on a dedicated profile, let the user log in, then save the decrypted
+    session cookies. Needed where Chrome's cookie DB can't be read (Windows app-bound encryption)."""
+    if not _PLAYWRIGHT_AVAILABLE:
+        raise RuntimeError("playwright not installed - run: uv add playwright && playwright install chromium")
+    profile_dir.mkdir(exist_ok=True)
+    async with async_playwright() as pw:
+        ctx = await asyncio.wait_for(
+            pw.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir), channel="chrome", headless=headless,
+                viewport={"width": 1280, "height": 900}, args=["--no-first-run", "--no-default-browser-check"],
+            ),
+            timeout=timeout_s,
+        )
         try:
-            for c in _bc3.chrome(cookie_file=str(_CHROME_PROFILE_1_COOKIES), domain_name=domain):
-                cookies[c.name] = c.value
-                if c.name == "rfjwt":
-                    rfjwt = c.value
-        except Exception:
-            pass
-    return cookies, rfjwt
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await page.goto(_CATALOG_URL, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+            await asyncio.to_thread(wait_for_user)
+            return _save_cookie_file(await ctx.cookies())
+        finally:
+            await ctx.close()
 
 
-def _normalise_api_item(item: dict) -> Optional[ReinventSession]:
+def _normalise_api_item(item: dict) -> ReinventSession | None:
     """Map a catalog.awsevents.com API item to ReinventSession."""
     title = (item.get("title") or "").strip()
     if not title:
@@ -442,34 +522,32 @@ def _normalise_api_item(item: dict) -> Optional[ReinventSession]:
 
     # Level: API returns "200 – Intermediate" or "300 – Advanced"
     level_raw = (attrs.get("Level") or [""])[0]
-    level: Optional[str] = None
+    level: str | None = None
     if "–" in level_raw:
         level = level_raw.split("–")[-1].strip()
     elif level_raw:
         level = level_raw.strip()
 
     # Session type: prefer the "Type" attributevalue; fall back to item.type
-    session_type: Optional[str] = (attrs.get("Type") or [item.get("type") or ""])[0] or None
+    session_type: str | None = (attrs.get("Type") or [item.get("type") or ""])[0] or None
 
     # Schedule from the first time slot
     times = item.get("times", [])
-    date: Optional[str] = None
-    time_str: Optional[str] = None
-    room: Optional[str] = None
-    capacity: Optional[str] = None
-    end_time: Optional[str] = None
+    date: str | None = None
+    time_str: str | None = None
+    room: str | None = None
+    capacity: str | None = None
     if times:
         t = times[0]
         date = t.get("date")
         time_str = t.get("startTime") or t.get("time")
-        end_time = t.get("endTime")
         room = t.get("room")
         cap = t.get("capacity")
         capacity = str(cap) if cap is not None else None
 
     # Venue: prefer dedicated Venue attributevalue, then parse from room
     venue_list = attrs.get("Venue", [])
-    venue: Optional[str] = venue_list[0] if venue_list else None
+    venue: str | None = venue_list[0] if venue_list else None
     if not venue and room:
         venue = room.split("|")[0].strip()
 
@@ -620,7 +698,7 @@ async def _fetch_catalog_via_api(rf_profile_id: str, rf_widget_id: str) -> tuple
     return all_sessions, wishlisted
 
 
-def _normalise_raw(raw: dict) -> Optional[ReinventSession]:
+def _normalise_raw(raw: dict) -> ReinventSession | None:
     """Map a raw scraped dict (DOM or API) to ReinventSession."""
     title = raw.get("title") or raw.get("name") or raw.get("sessionName") or raw.get("sessionTitle")
     if not title or not isinstance(title, str) or not title.strip():
@@ -695,7 +773,7 @@ def _normalise_raw(raw: dict) -> Optional[ReinventSession]:
     )
 
 
-_CHROME_USER_DATA_DIR = Path.home() / "Library/Application Support/Google/Chrome"
+_CHROME_USER_DATA_DIR = chrome_user_data_dir()
 
 
 async def sync_wishlist(
@@ -718,7 +796,7 @@ async def sync_wishlist(
     if _API_AVAILABLE:
         try:
             return await _fetch_catalog_via_api(rf_profile_id, rf_widget_id)
-        except Exception as exc:
+        except _API_ERRORS as exc:
             print(f"[wishlist] API fetch failed ({exc}) — falling back to browser")
 
     if not _PLAYWRIGHT_AVAILABLE:
@@ -728,14 +806,14 @@ async def sync_wishlist(
     seen_ids: set[str] = set()
 
     async with async_playwright() as pw:
-        context: Optional[BrowserContext] = None
-        page: Optional[Page] = None
+        context: BrowserContext | None = None
+        page: Page | None = None
 
         # ── Strategy 1: use existing Chrome profile (auto-login) ──────────
         chrome_profile = _CHROME_USER_DATA_DIR
         if chrome_profile.exists():
             try:
-                print(f"[wishlist] Launching Chrome with your existing profile (auto-login)...")
+                print("[wishlist] Launching Chrome with your existing profile (auto-login)...")
                 context = await pw.chromium.launch_persistent_context(
                     user_data_dir=str(chrome_profile),
                     channel="chrome",
@@ -744,8 +822,8 @@ async def sync_wishlist(
                     args=["--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble"],
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
-                print(f"[wishlist] Chrome launched — navigating to catalog...")
-            except Exception as exc:
+                print("[wishlist] Chrome launched — navigating to catalog...")
+            except (PlaywrightError, OSError) as exc:
                 print(f"[wishlist] Chrome profile launch failed ({exc}), falling back to Chromium + credentials...")
                 context = None
                 page = None
@@ -762,6 +840,7 @@ async def sync_wishlist(
             )
             page = await context.new_page()
 
+        assert page is not None  # every branch above assigns it; narrows for the type checker
         print(f"[wishlist] Opening catalog: {_CATALOG_URL}")
         await page.goto(_CATALOG_URL, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_load_state("networkidle")
@@ -779,22 +858,22 @@ async def sync_wishlist(
         # Handle login redirect (only needed if auto-login didn't work)
         current = page.url.lower()
         if any(kw in current for kw in ["sign-in", "login", "auth", "sso", "identity", "signin"]):
-            print(f"[wishlist] Not logged in — filling credentials...")
+            print("[wishlist] Not logged in — filling credentials...")
             logged_in = await _wait_for_login(page, email, password)
             if not logged_in:
                 print("[wishlist] WARNING: Could not confirm login. Continuing anyway...")
             # Navigate to catalog after login
             try:
                 await page.goto(_CATALOG_URL, wait_until="networkidle", timeout=30000)
-            except Exception:
-                pass
+            except PlaywrightError:
+                logger.debug("catalog navigation after login did not settle", exc_info=True)
             # Re-check for not-open
             body_text = (await page.inner_text("body")).strip().lower()
             if "event was not defined" in body_text:
                 await context.close()
                 raise RuntimeError("CATALOG_NOT_OPEN: re:Invent 2026 catalog not published yet.")
         else:
-            print(f"[wishlist] Already logged in via Chrome profile ✓")
+            print("[wishlist] Already logged in via Chrome profile ✓")
 
         # Try network intercept first (cleaner data)
         print("[wishlist] Attempting network intercept for session data...")
@@ -857,7 +936,8 @@ async def sync_wishlist(
                 if wl_sessions:
                     print(f"[wishlist]   Found {len(wl_sessions)} sessions in {wishlist_url_fragment} view")
                     break
-            except Exception:
+            except (PlaywrightError, KeyError, ValueError, TypeError):
+                logger.debug("no sessions at %s", wishlist_url, exc_info=True)
                 continue
 
         await context.close()
