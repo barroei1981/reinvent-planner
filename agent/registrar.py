@@ -18,6 +18,7 @@ from pathlib import Path
 
 import yaml
 
+from agent import keep
 from agent.catalog import Session
 from agent.platform_compat import kill_processes_using, profile_lock_files
 from agent.scheduler import ScheduledSession
@@ -188,7 +189,10 @@ class Registrar:
             if info[eid]["status"] in ("full", "walk_up", "unknown") and slot_backup and info[slot_backup.session.event_id]["status"] == "reservable":
                 pick = slot_backup
             peid = pick.session.event_id
-            if info[peid]["status"] == "reservable" and info[peid].get("code") and (only is None or peid in only):
+            if (
+                info[peid]["status"] == "reservable" and info[peid].get("code") and (only is None or peid in only)
+                and not keep.is_declined(info[peid]["code"])
+            ):
                 wanted.append((peid, info[peid]["code"]))
 
         booked = await self._book(wanted) if wanted else {}
