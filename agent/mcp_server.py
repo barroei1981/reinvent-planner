@@ -31,15 +31,18 @@ get_config      — return the active preferences from config.yaml
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import click
 import yaml
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -77,15 +80,16 @@ def _make_scorer(config: dict):
     if llm_cfg.get("enabled", False):
         try:
             import boto3  # noqa: F401
+
             from agent.llm_scorer import LLMScorer
             return LLMScorer(llm_cfg, prefs)
-        except Exception:
-            pass
+        except ImportError:
+            logger.debug("Bedrock scoring unavailable — using keyword scorer", exc_info=True)
     from agent.scorer import Scorer
     return Scorer(prefs)
 
 
-def _session_to_dict(s: Any, scheduled_start: Optional[str] = None) -> dict:
+def _session_to_dict(s: Any, scheduled_start: str | None = None) -> dict:
     return {
         "event_id": s.event_id,
         "title": s.title,
@@ -114,8 +118,7 @@ async def _fetch_and_score(config: dict):
 
     if reinvent_path.exists():
         from agent.wishlist import load_catalog
-        sessions = load_catalog()
-        return scorer.score_reinvent_sessions(sessions)
+        return scorer.score_reinvent_sessions(load_catalog())
 
     start = date.fromisoformat(ev_cfg["start_date"]) if ev_cfg.get("start_date") else None
     end = date.fromisoformat(ev_cfg["end_date"]) if ev_cfg.get("end_date") else None
@@ -239,8 +242,7 @@ async def get_event_details(event_id: str) -> str:
     if not session:
         # Fall back to checking the saved schedule
         if _SCHEDULE_PATH.exists():
-            with open(_SCHEDULE_PATH) as f:
-                schedule = json.load(f)
+            schedule = json.loads(_SCHEDULE_PATH.read_text())
             entry = next((s for s in schedule if s.get("event_id") == event_id), None)
             if entry:
                 return json.dumps(entry, indent=2)
@@ -339,7 +341,7 @@ def main(transport: str, host: str, port: int) -> None:
                 return await call_next(request)
 
         app.add_middleware(_BearerAuth)
-        click.echo(f"Auth: Bearer token required (AWSEVENTS_API_KEY is set)")
+        click.echo("Auth: Bearer token required (AWSEVENTS_API_KEY is set)")
     else:
         click.echo("Auth: none — set AWSEVENTS_API_KEY to require a Bearer token")
 

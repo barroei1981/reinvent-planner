@@ -187,9 +187,8 @@ venue_hop_costs:
 
 registration:
   enabled: true
-  # Your AWS Builder / re:Invent registration email
-  email: "roei.bar@bankleumi.co.il"
-  # Password comes from .env: AWSEVENTS_PASSWORD
+  # Email and password come from .env: AWSEVENTS_EMAIL / AWSEVENTS_PASSWORD (kept out of the repo)
+  email: ""
   # How often to poll for session availability (seconds)
   watch_interval_seconds: 600  # 10 minutes
   # Max retries per session before giving up
