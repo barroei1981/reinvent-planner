@@ -25,6 +25,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
+from agent import keep
 from agent.catalog import Session, fetch_sessions
 from agent.scheduler import ScheduledSession, build_schedule
 from agent.scorer import Scorer
@@ -995,7 +996,7 @@ def seats(auto_reserve: bool) -> None:
         raise click.ClickException(str(exc))
     clear_auth_alert()
     prev = load_previous()
-    openings = find_openings(prev, data)
+    openings = [o for o in find_openings(prev, data) if not keep.is_declined(o["code"])]
     old = prev.get("sessions", {})
     newly_enrolled = [
         v for k, v in data["sessions"].items()
@@ -1045,21 +1046,49 @@ def _auto_reserve(config: dict, schedule: list[ScheduledSession], openings: list
         write_status(data)
         return data
     done = [r for r in results if r.status == "registered"]
-    for r in results:
-        if r.session.event_id in only and r.status != "already_registered":
-            console.print(f"auto-reserve {r.status}: {r.session.title[:70]} {r.message}")
-    notify_text(
-        (f"Reserved {len(done)}: " + "; ".join(r.session.title[:40] for r in done)) if done
-        else "A planned session opened but could not be reserved - check awsevents_cron.log in the temp dir (/tmp on macOS)"
-    )
     api = config.get("catalog_api", {})
     fresh = asyncio.run(fetch_seat_status(schedule, api.get("rf_profile_id", ""), api.get("rf_widget_id", "")))
-    add_events(fresh, data, [
-        f"{'Reserved' if r.status == 'registered' else r.status.upper()}: {r.session.title[:60]} {r.message}".strip()
-        for r in results if r.session.event_id in only and r.status != "already_registered"
-    ])
+    conflicted = {
+        r.session.event_id: fresh["sessions"][r.session.event_id]["code"]
+        for r in results
+        if r.status == "conflict" and r.session.event_id in only and fresh["sessions"][r.session.event_id]["code"]
+    }
+    declined = dict(keep.decline_conflicts(conflicted, fresh["sessions"]))
+    code_of = {eid: fresh["sessions"][eid]["code"] for eid in only if eid in fresh["sessions"]}
+    events, undecided = [], False
+    for r in results:
+        if r.session.event_id not in only or r.status == "already_registered":
+            continue
+        console.print(f"auto-reserve {r.status}: {r.session.title[:70]} {r.message}")
+        if code_of.get(r.session.event_id) in declined:
+            events.append(f"Skipped (kept {declined[code_of[r.session.event_id]]}): {r.session.title[:60]}")
+            continue
+        undecided = True
+        events.append(f"{'Reserved' if r.status == 'registered' else r.status.upper()}: {r.session.title[:60]} {r.message}".strip())
+    if done:
+        notify_text(f"Reserved {len(done)}: " + "; ".join(r.session.title[:40] for r in done))
+    elif undecided:
+        notify_text("A planned session opened but could not be reserved - check awsevents_cron.log in the temp dir (/tmp on macOS)")
+    add_events(fresh, data, events)
     write_status(fresh)
     return fresh
+
+
+@cli.command(name="keep")
+@click.argument("code")
+@click.option("--over", multiple=True, help="Reservable session code(s) this enrolled session was chosen over")
+def keep_cmd(code: str, over: tuple[str, ...]) -> None:
+    """Approve an enrolled session so conflicting openings are skipped silently (never released)."""
+    keep.keep(code, list(over))
+    console.print(f"[green]Keeping {code}[/green]" + (f"; declined: {', '.join(over)}" if over else ""))
+
+
+@cli.command()
+@click.argument("code")
+def unkeep(code: str) -> None:
+    """Withdraw an approval; sessions declined because of it can open (and alert) again."""
+    keep.unkeep(code)
+    console.print(f"[yellow]No longer keeping {code}[/yellow]")
 
 
 @cli.command()
