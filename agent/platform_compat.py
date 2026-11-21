@@ -84,3 +84,40 @@ def kill_processes_using(profile_dir: Path) -> None:
     else:
         cmd = ["pkill", "-9", "-f", str(profile_dir)]
     subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=60, check=False)  # PowerShell cold start can take 30s+ in slow/emulated VMs
+
+
+SIGN_IN_URL = "https://catalog.awsevents.com"
+
+
+def chrome_executable() -> Path | None:
+    candidates = (
+        [
+            Path(os.environ.get(v, "")) / "Google/Chrome/Application/chrome.exe"
+            for v in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")
+        ]
+        if IS_WINDOWS
+        else [Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")]
+        if IS_MACOS
+        else [Path("/usr/bin/google-chrome")]
+    )
+    return next((p for p in candidates if p.is_file()), None)
+
+
+def open_chrome_profile1(url: str = SIGN_IN_URL) -> bool:
+    """Open `url` in a Chrome window of Profile 1 (the profile the seat check reads cookies from).
+
+    Starting the Chrome binary hands the request to an already-running instance and returns at once;
+    we never wait on it. Returns False when Chrome can't be found or started.
+    """
+    exe = chrome_executable()
+    if exe is None:
+        return False
+    try:
+        subprocess.Popen(
+            [str(exe), "--profile-directory=Profile 1", url],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=not IS_WINDOWS,
+        )
+    except OSError:
+        return False
+    return True

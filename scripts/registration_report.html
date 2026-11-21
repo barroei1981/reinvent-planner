@@ -26,14 +26,19 @@
   .unknown { background:#2a2d36; color:#9ca3af; }
   .lvl-Expert, .lvl-Distinguished { color:#f87171; } .lvl-Advanced { color:#fb923c; } .lvl-Intermediate { color:#60a5fa; }
   #err { color:#f87171; padding:0 24px; }
+  #relogin { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font:inherit; cursor:pointer; }
+  #relogin.needed { background:#7f1d1d; border-color:#f87171; font-weight:600; }
+  #hint { color:var(--mut); font-size:12px; padding:0 24px 8px; min-height:1em; }
 </style>
 </head>
 <body>
 <header>
   <h1>re:Invent 2026 — Registration Monitor</h1>
   <div id="meta">loading…</div>
+  <button id="relogin" type="button" title="Open Chrome Profile 1 at the AWS Events sign-in page">Re-login</button>
 </header>
 <div id="err"></div>
+<div id="hint"></div>
 <div id="progress" style="padding:0 24px 8px"></div>
 <div id="cards"></div>
 <h2 id="evh" style="margin:0 24px 8px;font-size:14px;color:var(--mut)">Recent activity</h2>
@@ -50,6 +55,20 @@ const LABEL = {
 const el = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
+const SIGN_IN_URL = "https://catalog.awsevents.com";
+
+async function relogin() {
+  el("hint").textContent = "";
+  try {
+    const r = await fetch("/api/relogin", {method: "POST", headers: {"X-Requested-With": "dashboard"}});
+    if (r.ok) { el("hint").textContent = "Sign-in window opened in Chrome Profile 1 - sign in there; the next check (within 10 min) clears the warning."; return; }
+    if (r.status === 429) { el("hint").textContent = "A sign-in window was just opened - give it a few seconds."; return; }
+  } catch (e) { /* no local action available (static server / file://) - fall through */ }
+  window.open(SIGN_IN_URL, "_blank", "noopener");
+  el("hint").textContent = "Opened the sign-in page in this browser - sign in with Chrome Profile 1 (or run: awsevents login).";
+}
+el("relogin").addEventListener("click", relogin);
+
 async function refresh() {
   try {
     const r = await fetch("awsevents_seats.json?t=" + Date.now(), {cache: "no-store"});
@@ -63,6 +82,10 @@ async function refresh() {
     const planned = s.filter(x => !x.backup), secured = planned.filter(x => x.status === "enrolled").length;
     el("meta").textContent = `last check ${new Date(d.last_check).toLocaleString()} (${age} min ago) · ${secured} of ${planned.length} planned enrolled · ${d.enrolled_total} total on account · page refreshes every 30s`;
     el("meta").style.color = age > 30 ? "#ff6b6b" : "";
+    // The seat check writes awsevents_auth_alert.json while the login is expired and removes it on recovery.
+    const expired = (await fetch("awsevents_auth_alert.json?t=" + Date.now(), {cache: "no-store"}).catch(() => null))?.ok === true;
+    if (expired) el("err").textContent = "Login expired - click Re-login and sign in to AWS Events (Chrome Profile 1).";
+    el("relogin").classList.toggle("needed", age > 30 || expired);
     if (age > 30) el("meta").textContent += " · STALE: checks are failing - see activity feed / log in to Chrome Profile 1";
     const pct = Math.round(100 * secured / Math.max(planned.length, 1));
     el("progress").innerHTML = `<div style="font-size:13px;margin-bottom:6px"><b>${secured}</b> of ${planned.length} planned sessions secured (${pct}%)</div>
