@@ -20,6 +20,7 @@ and auto-registers for sessions via Playwright once seats open.
 - `agent/scheduler.py`  — greedy daily schedule optimizer with venue-hop penalty
 - `agent/seats.py`      — catalog-API seat status (enrolled/reservable/walk_up/full) + opening alerts
 - `agent/registrar.py`  — reserves API-confirmed reservable sessions via Playwright; verifies via /api/myData
+- `agent/dashboard_server.py` — serves the seat dashboard from /tmp; `POST /api/relogin` opens Chrome Profile 1 at the sign-in page (Re-login button)
 - `agent/main.py`       — CLI: plan / list / register / watch
 - `agent/mcp_server.py` — MCP server (4 tools: list_sessions, plan_schedule, get_schedule, get_config)
 
