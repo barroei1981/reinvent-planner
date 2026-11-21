@@ -7,13 +7,11 @@ Each function returns an HTML string; call open_in_browser() to launch it.
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-
 
 # ── Colour constants (venue clusters — Glass tokens from DESIGN.md) ───────────
 _CLUSTER_COLORS = ["#64748b", "#6366f1", "#ec4899", "#14b8a6", "#f59e0b"]
@@ -489,22 +487,17 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
             cluster = _venue_cluster(s.get("location"))
             cluster_color = _CLUSTER_COLORS[cluster]
             cluster_label = _CLUSTER_LABELS[cluster]
-            lvl_color = _LEVEL_COLORS.get(lvl, "#888")
 
             ss = s.get("scheduled_start")
             se = s.get("scheduled_end")
             try:
                 start_dt = datetime.fromisoformat(ss) if ss else None
                 end_dt = datetime.fromisoformat(se) if se else None
-            except Exception:
+            except ValueError:
                 start_dt = end_dt = None
 
             start_str = start_dt.strftime("%H:%M") if start_dt else (s.get("start_time") or "?")[:5]
             end_str = end_dt.strftime("%H:%M") if end_dt else "?"
-
-            dur_min = 0
-            if start_dt and end_dt:
-                dur_min = int((end_dt - start_dt).total_seconds() / 60)
 
             # Travel warning
             if prev_end and start_dt and prev_cluster and cluster and prev_cluster != cluster:
@@ -542,7 +535,8 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
 
             # Interactive controls (only when served from the local web server)
             if interactive_port and not is_keynote:
-                _q = lambda v: v.replace("'", "\\'")
+                def _q(v):
+                    return v.replace("'", "\\'")
 
                 # Check if there's a backup at this slot
                 slot_info = slot_map.get(slot_key, {})
@@ -583,17 +577,17 @@ def html_schedule(schedule: list[dict], interactive_port: int | None = None) -> 
             star = '<span style="color:var(--star)">★</span> ' if is_wishlist else ""
             if is_keynote:
                 keynote_header = (
-                    f'<div style="margin-bottom:6px">'
-                    f'<span class="badge" style="background:rgba(167,139,250,0.12);color:var(--keynote);border-color:rgba(167,139,250,0.4)">'
-                    f'★ KEYNOTE · Open attendance</span></div>'
+                    '<div style="margin-bottom:6px">'
+                    '<span class="badge" style="background:rgba(167,139,250,0.12);color:var(--keynote);border-color:rgba(167,139,250,0.4)">'
+                    '★ KEYNOTE · Open attendance</span></div>'
                 )
                 card_border = "border-color:rgba(167,139,250,0.35)"
                 bar_color = "var(--keynote)"
             elif is_backup:
                 keynote_header = (
-                    f'<div style="margin-bottom:6px">'
-                    f'<span class="badge" style="background:rgba(251,191,36,0.10);color:#f59e0b;border-color:rgba(251,191,36,0.35)">'
-                    f'⚑ BACKUP · Register if primary is full</span></div>'
+                    '<div style="margin-bottom:6px">'
+                    '<span class="badge" style="background:rgba(251,191,36,0.10);color:#f59e0b;border-color:rgba(251,191,36,0.35)">'
+                    '⚑ BACKUP · Register if primary is full</span></div>'
                 )
                 card_border = "border-style:dashed;border-color:rgba(251,191,36,0.35);opacity:0.85"
                 bar_color = "#f59e0b"
@@ -994,7 +988,7 @@ _STATUS_CONFIG = {
 def html_registration_status(results: list[dict], schedule: list[dict]) -> str:
     registered = [r for r in results if r.get("status") in ("registered", "already_registered")]
     waitlisted = [r for r in results if r.get("status") in ("waitlisted", "walkin")]
-    full_missed = [r for r in results if r.get("status") == "full"]
+    full_missed = [r for r in results if r.get("status") in ("full", "walk_up")]
     not_open = [r for r in results if r.get("status") == "not_open"]
     errors = [r for r in results if r.get("status") == "error"]
 
@@ -1109,7 +1103,7 @@ def _gaps_analysis(schedule: list[dict], results: list[dict]) -> str:
             try:
                 s_dt = datetime.fromisoformat(ss) if ss else None
                 e_dt = datetime.fromisoformat(se) if se else None
-            except Exception:
+            except ValueError:
                 s_dt = e_dt = None
             if prev_end and s_dt and s_dt > prev_end:
                 gap = int((s_dt - prev_end).total_seconds() / 60)

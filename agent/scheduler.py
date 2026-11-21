@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any
 
 from agent.catalog import Session
 
@@ -30,7 +30,7 @@ class ScheduledSession:
     backup_note: str = ""
 
 
-def _resolve_cluster(location: Optional[str], venue_clusters: list[dict]) -> Optional[int]:
+def _resolve_cluster(location: str | None, venue_clusters: list[dict]) -> int | None:
     if not location:
         return None
     loc_lower = location.lower()
@@ -42,8 +42,8 @@ def _resolve_cluster(location: Optional[str], venue_clusters: list[dict]) -> Opt
 
 
 def _hop_cost(
-    cluster_a: Optional[int],
-    cluster_b: Optional[int],
+    cluster_a: int | None,
+    cluster_b: int | None,
     hop_costs: list[list[int]],
 ) -> int:
     if cluster_a is None or cluster_b is None:
@@ -108,21 +108,21 @@ def build_schedule(
     by_day: dict[str, list[Session]] = {}
     for s in sessions:
         by_day.setdefault(s.day_key(), []).append(s)
-    for day in by_day:
-        by_day[day].sort(key=lambda s: s.score, reverse=True)
+    for day_sessions in by_day.values():
+        day_sessions.sort(key=lambda s: s.score, reverse=True)
 
     schedule: list[ScheduledSession] = []
 
     for day in sorted(by_day):
         candidates = by_day[day]
         accepted: list[ScheduledSession] = []
-        last_cluster: Optional[int] = None
+        last_cluster: int | None = None
         domain_counts: dict[str, int] = {}
 
         remaining = list(candidates)
 
         while len(accepted) < max_per_day and remaining:
-            best_idx: Optional[int] = None
+            best_idx: int | None = None
             best_adjusted: float = -1.0
 
             for idx, cand in enumerate(remaining):
