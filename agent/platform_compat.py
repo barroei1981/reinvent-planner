@@ -86,7 +86,7 @@ def kill_processes_using(profile_dir: Path) -> None:
     subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=60, check=False)  # PowerShell cold start can take 30s+ in slow/emulated VMs
 
 
-SIGN_IN_URL = "https://catalog.awsevents.com"
+SIGN_IN_URL = "https://registration.awsevents.com/flow/awsevents/reinvent2026/event-catalog/page/eventCatalog"  # catalog.awsevents.com is the API host; its landing page redirects to rainfocus.com
 
 
 def chrome_executable() -> Path | None:

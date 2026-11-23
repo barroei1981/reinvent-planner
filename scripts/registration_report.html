@@ -55,7 +55,7 @@ const LABEL = {
 const el = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
-const SIGN_IN_URL = "https://catalog.awsevents.com";
+const SIGN_IN_URL = "https://registration.awsevents.com/flow/awsevents/reinvent2026/event-catalog/page/eventCatalog";
 
 async function relogin() {
   el("hint").textContent = "";
