@@ -152,7 +152,7 @@ def notify_auth_expired(now: datetime | None = None) -> bool:
             return False
     except (OSError, ValueError, KeyError):
         pass
-    text = "Login expired - sign in to catalog.awsevents.com in Chrome Profile 1, or run: awsevents login"
+    text = "Login expired - sign in to AWS Events (registration.awsevents.com) in Chrome Profile 1, or run: awsevents login"
     notify_text(text)
     with ALERT_LOG.open("a") as f:
         f.write(f"{now.isoformat()}\n  {text}\n")
