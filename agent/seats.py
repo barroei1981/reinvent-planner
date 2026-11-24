@@ -67,10 +67,8 @@ def classify(item: dict | None, time_entry: dict | None, enrolled: bool) -> str:
     return "full"
 
 
-async def fetch_seat_status(
-    schedule: list[ScheduledSession], rf_profile_id: str, rf_widget_id: str
-) -> dict:
-    wanted = {ss.session.event_id: ss for ss in schedule}
+def make_client(rf_profile_id: str, rf_widget_id: str) -> httpx.AsyncClient:
+    """Authenticated catalog API client (cookies from Chrome Profile 1 / the login cookie file)."""
     cookies, rfjwt = _load_chrome_profile1_cookies()
     headers = _rf_headers(rf_profile_id, rf_widget_id)
     headers.update({
@@ -81,9 +79,16 @@ async def fetch_seat_status(
     })
     if rfjwt:
         headers["rfAuthToken"] = rfjwt
+    return httpx.AsyncClient(cookies=cookies, headers=headers, timeout=30)
+
+
+async def fetch_seat_status(
+    schedule: list[ScheduledSession], rf_profile_id: str, rf_widget_id: str
+) -> dict:
+    wanted = {ss.session.event_id: ss for ss in schedule}
 
     found: dict[str, dict] = {}
-    async with httpx.AsyncClient(cookies=cookies, headers=headers, timeout=30) as client:
+    async with make_client(rf_profile_id, rf_widget_id) as client:
         my = await _post(client, "/api/myData")
         if "mySchedule" not in my:
             raise RuntimeError("not authenticated: /api/myData has no mySchedule (log in to Chrome Profile 1, or run: awsevents login)")
@@ -121,6 +126,8 @@ async def fetch_seat_status(
             "seats_remaining": entry.get("seatsRemaining") if entry else None,
             "capacity": entry.get("capacity") if entry else None,
             "waitlist_remaining": entry.get("waitlistRemaining") if entry else None,
+            "session_time_id": entry.get("sessionTimeID") if entry else None,
+            "slot": [f"{entry.get('date')} {entry.get('startTime')}", f"{entry.get('date')} {entry.get('endTime')}"] if entry else None,
         }
     return {
         "last_check": datetime.now().astimezone().isoformat(),

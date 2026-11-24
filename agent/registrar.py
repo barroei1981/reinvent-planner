@@ -1,9 +1,9 @@
 """Seat reservation for re:Invent 2026.
 
 Truth comes from the catalog API (agent.seats): which sessions are reservable, which are walk-up
-only or full, and what the account is actually enrolled in. The browser is used only to click
-"Reserve a seat" on sessions the API says are reservable, and every booking is verified against
-/api/myData afterwards. Schedule-conflict dialogs are always cancelled — an existing reservation
+only or full, and what the account is actually enrolled in. Sessions the API says are reservable are
+booked through the API (agent.registrar_api); the browser clicks "Reserve a seat" only as a fallback when
+the API step errors. Every booking is verified against /api/myData afterwards. Schedule-conflict dialogs are always cancelled — an existing reservation
 is never released automatically.
 """
 
@@ -16,13 +16,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 import yaml
 
 from agent import keep
 from agent.catalog import Session
 from agent.platform_compat import kill_processes_using, profile_lock_files
+from agent.registrar_api import reserve
 from agent.scheduler import ScheduledSession
-from agent.seats import fetch_seat_status
+from agent.seats import fetch_seat_status, make_client
 
 try:
     from playwright.async_api import Error as PlaywrightError
@@ -144,7 +146,27 @@ class Registrar:
     async def _status(self, schedule: list[ScheduledSession]) -> dict:
         return await fetch_seat_status(schedule, self._api.get("rf_profile_id", ""), self._api.get("rf_widget_id", ""))
 
-    async def _book(self, wanted: list[tuple[str, str]]) -> dict[str, tuple[str, str]]:
+    async def _book(self, wanted: list[tuple[str, str]], info: dict) -> dict[str, tuple[str, str]]:
+        """Reserve [(event_id, code)]: API first, the browser only for sessions the API could not book."""
+        out: dict[str, tuple[str, str]] = {}
+        try:
+            async with make_client(self._api.get("rf_profile_id", ""), self._api.get("rf_widget_id", "")) as client:
+                for event_id, _code in wanted:
+                    i = info[event_id]
+                    if not i.get("session_time_id") or not i.get("slot"):
+                        continue  # no time entry to book - leave to the browser
+                    out[event_id] = await asyncio.wait_for(reserve(client, event_id, i["session_time_id"], i["slot"]), timeout=60)
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+            print(f"[registrar] API reserve unavailable ({type(exc).__name__}) - falling back to the browser")
+        retry = [(e, c) for e, c in wanted if out.get(e, ("error", ""))[0] == "error"]
+        for event_id, (outcome, msg) in out.items():
+            if outcome == "error":
+                print(f"[registrar] API could not book {event_id}: {msg} - trying the browser")
+        if retry:
+            out.update(await self._book_browser(retry))
+        return out
+
+    async def _book_browser(self, wanted: list[tuple[str, str]]) -> dict[str, tuple[str, str]]:
         """Reserve [(event_id, code)] in one browser session. Returns {event_id: (outcome, message)}."""
         if not _PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("playwright not installed - run: uv add playwright && playwright install chromium")
@@ -195,7 +217,7 @@ class Registrar:
             ):
                 wanted.append((peid, info[peid]["code"]))
 
-        booked = await self._book(wanted) if wanted else {}
+        booked = await self._book(wanted, info) if wanted else {}
         if booked:
             data = await self._status(schedule)  # authoritative: did the account really get enrolled?
             info = data["sessions"]

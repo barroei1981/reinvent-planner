@@ -58,7 +58,7 @@ class FakeRegistrar(Registrar):
     async def _status(self, schedule):
         return self._snaps.pop(0) if len(self._snaps) > 1 else self._snaps[0]
 
-    async def _book(self, wanted):
+    async def _book(self, wanted, info):
         self.booked = wanted
         return {eid: self._book_result for eid, _ in wanted}
 
