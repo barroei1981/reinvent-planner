@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import sqlite3
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from dataclasses import replace as dc_replace
 from pathlib import Path
@@ -463,7 +464,7 @@ def _load_cookie_file(path: Path | None = None, now: float | None = None) -> tup
     return cookies, cookies.get("rfjwt", "")
 
 
-def _save_cookie_file(records: list[dict], path: Path | None = None) -> int:
+def _save_cookie_file(records: Sequence[Mapping[str, object]], path: Path | None = None) -> int:
     """Write the awsevents.com cookies (session tokens - keep them private) and return how many were kept."""
     import os
 
