@@ -2,8 +2,13 @@ _lch/render/
 _lch/config.user.toml
 _lch/custom/config.user.toml
 .harness/cost_log.md
+.harness/events.jsonl
+.harness/qa-status/
 .env
+.env.*
+!.env.example
 schedule.json
+schedule_bedrock.json
 __pycache__/
 *.pyc
 .venv/
@@ -20,3 +25,17 @@ kept_sessions.json
 
 # UX planning artifacts
 _lch-output/
+
+# Tool caches and OS noise
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+*.log
+.claude/settings.local.json
+
+# Secrets / session tokens - never commit
+.awsevents_cookies.json
+*.pem
+*.key
+credentials.json
